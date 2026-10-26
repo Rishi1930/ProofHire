@@ -93,10 +93,11 @@ Required frontend environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `VITE_SUPABASE_URL` | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon/publishable key |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (preferred) |
+| `VITE_SUPABASE_ANON_KEY` | Legacy anon key; used if the publishable-key variable is unset |
 
 Only the anon/publishable key belongs in browser configuration. **Never put a
-Supabase service-role key or other server secret in a `VITE_` variable.**
+Supabase secret/service-role key or other server secret in a `VITE_` variable.**
 The backend currently uses the same anon/publishable key to verify sessions
 through Supabase Auth; future privileged server tasks must use a separate,
 server-only, least-privilege design.

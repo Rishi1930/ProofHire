@@ -2,7 +2,9 @@
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim()
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
+const supabasePublicKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+  import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
 
 function isValidSupabaseUrl(value: string | undefined): value is string {
   if (!value) return false
@@ -19,11 +21,11 @@ function isValidSupabaseUrl(value: string | undefined): value is string {
 }
 
 export const isSupabaseConfigured =
-  isValidSupabaseUrl(supabaseUrl) && Boolean(supabaseAnonKey)
+  isValidSupabaseUrl(supabaseUrl) && Boolean(supabasePublicKey)
 
 export const supabase =
-  isSupabaseConfigured && supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey, {
+  isSupabaseConfigured && supabaseUrl && supabasePublicKey
+    ? createClient(supabaseUrl, supabasePublicKey, {
         auth: {
           persistSession: true,
           autoRefreshToken: true,
