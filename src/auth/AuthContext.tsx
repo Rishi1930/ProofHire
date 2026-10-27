@@ -16,11 +16,6 @@ type AuthContextValue = {
   session: Session | null
   loading: boolean
   signOut: () => Promise<{ error: Error | null }>
-  cancelAccountDeletion: () => Promise<{
-    cancelled: boolean
-    processing: boolean
-    error: Error | null
-  }>
   refreshSession: () => Promise<void>
 }
 
@@ -109,43 +104,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, [])
 
-  const cancelAccountDeletion = useCallback(async () => {
-    if (!supabase) {
-      return {
-        cancelled: false,
-        processing: false,
-        error: new Error('Authentication is not configured yet.'),
-      }
-    }
-
-    const { data: cancelled, error } = await supabase.rpc(
-      'cancel_account_deletion',
-    )
-
-    if (error) {
-      return { cancelled: false, processing: false, error }
-    }
-
-    if (cancelled) {
-      return { cancelled: true, processing: false, error: null }
-    }
-
-    const { data: request, error: lookupError } = await supabase
-      .from('account_deletion_requests')
-      .select('status')
-      .maybeSingle()
-
-    if (lookupError) {
-      return { cancelled: false, processing: false, error: lookupError }
-    }
-
-    return {
-      cancelled: false,
-      processing: request?.status === 'processing',
-      error: null,
-    }
-  }, [])
-
   const refreshSession = useCallback(async () => {
     if (!supabase) return
 
@@ -167,7 +125,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
         session,
         loading,
         signOut,
-        cancelAccountDeletion,
         refreshSession,
       }}
     >

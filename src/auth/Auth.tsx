@@ -9,7 +9,6 @@ import {
   Sparkles,
 } from 'lucide-react'
 
-import { useAuth } from './AuthContext'
 import { supabase } from '../lib/supabase'
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset'
@@ -24,7 +23,6 @@ function getMode(pathname: string): AuthMode {
 export default function Auth() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { cancelAccountDeletion } = useAuth()
   const mode = getMode(location.pathname)
 
   const [fullName, setFullName] = useState('')
@@ -58,18 +56,6 @@ export default function Auth() {
         })
 
         if (error) throw error
-
-        const deletion = await cancelAccountDeletion()
-        if (deletion.error) {
-          throw new Error(
-            `You are signed in, but we could not verify your account deletion request: ${deletion.error.message}`,
-          )
-        }
-        if (deletion.processing) {
-          throw new Error(
-            'Account deletion has already started and can no longer be canceled. Contact support if you believe this is a mistake.',
-          )
-        }
 
         const destination =
           (location.state as { from?: { pathname?: string } } | null)?.from
@@ -128,18 +114,6 @@ export default function Auth() {
         const { error } = await supabase.auth.updateUser({ password })
 
         if (error) throw error
-
-        const deletion = await cancelAccountDeletion()
-        if (deletion.error) {
-          throw new Error(
-            `Your password was updated, but we could not verify your account deletion request: ${deletion.error.message}`,
-          )
-        }
-        if (deletion.processing) {
-          throw new Error(
-            'Your password was updated, but account deletion has already started and can no longer be canceled. Contact support if you believe this is a mistake.',
-          )
-        }
 
         setMessage('Password updated successfully. You can now sign in.')
         navigate('/login', { replace: true })

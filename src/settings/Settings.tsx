@@ -50,7 +50,7 @@ function formatDate(value: string) {
 }
 
 export default function Settings() {
-  const { user, signOut, cancelAccountDeletion, refreshSession } = useAuth()
+  const { user, signOut, refreshSession } = useAuth()
   const navigate = useNavigate()
   const [company, setCompany] = useState<CompanyProfile>(emptyCompanyProfile)
   const [recruiterName, setRecruiterName] = useState('')
@@ -64,7 +64,6 @@ export default function Settings() {
   const [savingCompany, setSavingCompany] = useState(false)
   const [savingRecruiter, setSavingRecruiter] = useState(false)
   const [requestingDeletion, setRequestingDeletion] = useState(false)
-  const [cancellingDeletion, setCancellingDeletion] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
@@ -298,33 +297,6 @@ export default function Settings() {
       setErrorMessage(getErrorMessage(error))
     } finally {
       setRequestingDeletion(false)
-    }
-  }
-
-  async function handleCancelDeletion() {
-    setErrorMessage('')
-    setSuccessMessage('')
-    setCancellingDeletion(true)
-
-    try {
-      const result = await cancelAccountDeletion()
-      if (result.error) throw result.error
-      if (result.processing) {
-        throw new Error(
-          'Deletion has already started and can no longer be canceled.',
-        )
-      }
-
-      setDeletionRequest(null)
-      setSuccessMessage(
-        result.cancelled
-          ? 'Account deletion canceled. Your account and workspace access are active.'
-          : 'There is no pending account deletion request.',
-      )
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error))
-    } finally {
-      setCancellingDeletion(false)
     }
   }
 
@@ -707,31 +679,21 @@ export default function Settings() {
                   </strong>
                   <p>
                     {deletionRequest.status === 'pending'
-                      ? `Sign in again or cancel below before ${formatDate(deletionRequest.scheduled_for)} to keep your account.`
+                      ? `Your account is scheduled for deletion on ${formatDate(deletionRequest.scheduled_for)}. Cancellation is temporarily unavailable; contact support if you need help.`
                       : 'The grace period has ended. Deletion can no longer be canceled.'}
                   </p>
                 </div>
-                {deletionRequest.status === 'pending' && (
-                  <button
-                    type="button"
-                    className="button button-secondary"
-                    onClick={() => void handleCancelDeletion()}
-                    disabled={cancellingDeletion}
-                  >
-                    {cancellingDeletion ? 'Canceling...' : 'Cancel deletion'}
-                  </button>
-                )}
               </div>
             ) : (
               <div className="settings-deletion-state">
                 <div className="settings-danger-copy">
                   <strong>15-day recovery period</strong>
                   <p>
-                    Your account remains recoverable for 15 days. Signing in
-                    during that period cancels deletion. Team workspaces and
-                    recruiting records are retained; if you are the only
-                    workspace member, that workspace and its uploaded resumes
-                    are deleted too.
+                    Your account remains scheduled for deletion for 15 days.
+                    Cancellation is temporarily unavailable; contact support
+                    if you need help. Team workspaces and recruiting records
+                    are retained; if you are the only workspace member, that
+                    workspace and its uploaded resumes are deleted too.
                   </p>
                 </div>
                 <button
