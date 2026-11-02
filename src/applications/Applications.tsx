@@ -1,13 +1,11 @@
 
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
-  CheckCircle2,
   FileUp,
   FileText,
   Search,
-  Upload,
   Users,
   RefreshCw,
 } from 'lucide-react'
@@ -34,22 +32,13 @@ type JobOption = {
   status: string
 }
 
-const allowedResumeTypes = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-]
-
-const maxResumeSize = 5 * 1024 * 1024
-
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.'
 }
 
 export default function Applications() {
   const location = useLocation()
-  const { jobId } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const isPublicPage = location.pathname.startsWith('/apply/')
   const {
     applications,
     workspaceId,
@@ -61,7 +50,7 @@ export default function Applications() {
 
   const [jobs, setJobs] = useState<JobOption[]>([])
   const [selectedJobId, setSelectedJobId] = useState(
-    jobId ?? searchParams.get('job') ?? '',
+    searchParams.get('job') ?? '',
   )
   const [selectedStatus, setSelectedStatus] = useState(
     searchParams.get('status') ?? '',
@@ -97,62 +86,23 @@ export default function Applications() {
       : returnTo.startsWith('/screening')
         ? 'Back to Resume Screening'
         : 'Back to Jobs & Hiring'
-  const [fullName, setFullName] = useState('')
-  const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
-  const [resume, setResume] = useState<File | null>(null)
   const [search, setSearch] = useState(searchParams.get('q') ?? '')
   const [loading, setLoading] = useState(true)
-  const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
-  const [publicJob, setPublicJob] = useState<JobOption | null>(null)
 
   useEffect(() => {
-    setSelectedJobId(jobId ?? searchParams.get('job') ?? '')
+    setSelectedJobId(searchParams.get('job') ?? '')
     setSelectedStatus(searchParams.get('status') ?? '')
     setSelectedSource(searchParams.get('source') ?? '')
     const range = searchParams.get('range') ?? ''
     setSelectedRange(['', '30', '90', '365'].includes(range) ? range : '')
     setSearch(searchParams.get('q') ?? '')
-  }, [location.search, jobId, searchParams])
+  }, [location.search, searchParams])
 
   useEffect(() => {
-    if (isPublicPage && jobId) {
-      void loadPublicJob(jobId)
-    } else if (!isPublicPage && workspaceId) {
-      void loadRecruiterJobs(workspaceId)
-    }
-  }, [isPublicPage, jobId, workspaceId])
-
-  async function loadPublicJob(id: string) {
-    setLoading(true)
-    setErrorMessage('')
-
-    if (!supabase) {
-      setErrorMessage('This application form is not configured yet.')
-      setLoading(false)
-      return
-    }
-
-    const { data, error } = await supabase
-      .from('jobs')
-      .select('id, title, status')
-      .eq('id', id)
-      .eq('status', 'open')
-      .maybeSingle()
-
-    if (error) {
-      setErrorMessage('Unable to load this job application.')
-    } else if (!data) {
-      setErrorMessage('This job is unavailable or no longer accepting applications.')
-    } else {
-      setPublicJob(data as JobOption)
-      setSelectedJobId(data.id)
-    }
-
-    setLoading(false)
-  }
+    if (workspaceId) void loadRecruiterJobs(workspaceId)
+  }, [workspaceId])
 
   async function loadRecruiterJobs(activeWorkspaceId: string) {
     setLoading(true)
@@ -186,80 +136,6 @@ export default function Applications() {
     }
 
     setLoading(false)
-  }
-
-  function handleResumeChange(event: ChangeEvent<HTMLInputElement>) {
-    setErrorMessage('')
-    const file = event.target.files?.[0] ?? null
-
-    if (!file) {
-      setResume(null)
-      return
-    }
-
-    const extension = file.name.split('.').pop()?.toLowerCase()
-    const typeAllowed =
-      allowedResumeTypes.includes(file.type) ||
-      (file.type === '' && ['pdf', 'docx'].includes(extension ?? ''))
-
-    if (!typeAllowed) {
-      setResume(null)
-      setErrorMessage('Upload a PDF or DOCX resume.')
-      event.target.value = ''
-      return
-    }
-
-    if (file.size > maxResumeSize) {
-      setResume(null)
-      setErrorMessage('Your resume must be 5 MB or smaller.')
-      event.target.value = ''
-      return
-    }
-
-    setResume(file)
-  }
-
-  async function handlePublicSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setErrorMessage('')
-    setSuccessMessage('')
-
-    if (!supabase || !publicJob) {
-      setErrorMessage('This application form is currently unavailable.')
-      return
-    }
-
-    if (!resume) {
-      setErrorMessage('Please attach your resume to continue.')
-      return
-    }
-
-    setSubmitting(true)
-
-    try {
-      // The public submission RPC and private resume upload are connected
-      // after the fresh database schema and secure Storage policies are created.
-      const { error } = await supabase.rpc('submit_public_application', {
-        target_job_id: publicJob.id,
-        applicant_name: fullName.trim(),
-        applicant_email: email.trim(),
-        applicant_phone: phone.trim() || null,
-      })
-
-      if (error) throw error
-
-      setSuccessMessage(
-        'Your application details have been received. Resume upload will be enabled once secure storage is configured.',
-      )
-      setFullName('')
-      setEmail('')
-      setPhone('')
-      setResume(null)
-    } catch (error) {
-      setErrorMessage(errorText(error))
-    } finally {
-      setSubmitting(false)
-    }
   }
 
   const rangeDays = Number(selectedRange)
@@ -366,140 +242,6 @@ export default function Applications() {
     },
   ]
 
-  if (isPublicPage) {
-    return (
-      <main className="public-application-page">
-        <header className="public-application-header">
-          <Link to="/login" className="auth-brand">
-            <span className="brand-mark">P</span>
-            <span>ProofHire</span>
-          </Link>
-          <span className="public-secure-label">
-            <CheckCircle2 size={15} />
-            Candidate application
-          </span>
-        </header>
-
-        <section className="public-application-card">
-          {loading ? (
-            <div className="empty-state">
-              <span className="loading-spinner" />
-              <p>Loading job details...</p>
-            </div>
-          ) : errorMessage && !publicJob ? (
-            <div className="empty-state">
-              <h1>Application unavailable</h1>
-              <p>{errorMessage}</p>
-            </div>
-          ) : successMessage ? (
-            <div className="application-success">
-              <span className="success-icon">
-                <CheckCircle2 size={30} />
-              </span>
-              <h1>Thank you for applying</h1>
-              <p>{successMessage}</p>
-            </div>
-          ) : (
-            <>
-              <span className="page-eyebrow">CAREER OPPORTUNITY</span>
-              <h1>{publicJob?.title}</h1>
-              <p className="public-application-intro">
-                Submit your details and resume for consideration.
-              </p>
-
-              <form className="public-application-form" onSubmit={handlePublicSubmit}>
-                <label className="field-label" htmlFor="applicant-name">
-                  Full name *
-                </label>
-                <input
-                  id="applicant-name"
-                  className="form-input"
-                  value={fullName}
-                  onChange={(event) => setFullName(event.target.value)}
-                  minLength={2}
-                  maxLength={160}
-                  autoComplete="name"
-                  required
-                />
-
-                <label className="field-label" htmlFor="applicant-email">
-                  Email address *
-                </label>
-                <input
-                  id="applicant-email"
-                  className="form-input"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  maxLength={254}
-                  autoComplete="email"
-                  required
-                />
-
-                <label className="field-label" htmlFor="applicant-phone">
-                  Phone number
-                </label>
-                <input
-                  id="applicant-phone"
-                  className="form-input"
-                  type="tel"
-                  value={phone}
-                  onChange={(event) => setPhone(event.target.value)}
-                  maxLength={32}
-                  autoComplete="tel"
-                />
-
-                <label className="field-label" htmlFor="applicant-resume">
-                  Resume (PDF or DOCX, max 5 MB) *
-                </label>
-                <label className="resume-dropzone" htmlFor="applicant-resume">
-                  <FileUp size={23} />
-                  <strong>{resume ? resume.name : 'Choose your resume'}</strong>
-                  <span>
-                    {resume
-                      ? `${(resume.size / (1024 * 1024)).toFixed(2)} MB`
-                      : 'PDF or DOCX · Maximum 5 MB'}
-                  </span>
-                  <input
-                    id="applicant-resume"
-                    type="file"
-                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    onChange={handleResumeChange}
-                    required
-                  />
-                </label>
-
-                {errorMessage && (
-                  <div className="form-alert form-alert-error" role="alert">
-                    {errorMessage}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  className="button button-primary public-submit"
-                  disabled={submitting || !publicJob}
-                >
-                  {submitting ? 'Submitting...' : 'Submit application'}
-                  <Upload size={17} />
-                </button>
-
-                <p className="form-privacy-note">
-                  Your information will be shared with the recruiting team
-                  responsible for this role.
-                </p>
-              </form>
-            </>
-          )}
-        </section>
-
-        <footer className="public-application-footer">
-          Recruitment workspace powered by ProofHire
-        </footer>
-      </main>
-    )
-  }
-
   async function handleStatusChange(
     applicationId: string,
     status: ApplicationStatus,
@@ -512,20 +254,18 @@ export default function Applications() {
     <section className="page-stack">
       <div className="page-heading-row">
         <div className="page-heading">
-          {!isPublicPage && (
-            <Link
-              to={returnTo}
-              state={
-                returnTo.startsWith('/reports') && reportFilters
-                  ? { reportFilters }
-                  : undefined
-              }
-              className="text-link"
-            >
-              <ArrowLeft size={15} />
-              {returnLabel}
-            </Link>
-          )}
+          <Link
+            to={returnTo}
+            state={
+              returnTo.startsWith('/reports') && reportFilters
+                ? { reportFilters }
+                : undefined
+            }
+            className="text-link"
+          >
+            <ArrowLeft size={15} />
+            {returnLabel}
+          </Link>
           <span className="page-eyebrow">RECRUITMENT WORKSPACE</span>
           <h1>Applications</h1>
           <p>Review applications received for your published roles.</p>
@@ -547,16 +287,14 @@ export default function Applications() {
         </div>
       )}
 
-      {!isPublicPage && (
-        <div className="recruitment-export-toolbar">
-          <p>CSV and workbook exports exclude private resume paths and signed URLs.</p>
-          <ExportActions
-            scope={filteredApplicationsScope}
-            disabled={applicationsLoading || Boolean(applicationsError)}
-            options={applicationExportOptions}
-          />
-        </div>
-      )}
+      <div className="recruitment-export-toolbar">
+        <p>CSV and workbook exports exclude private resume paths and signed URLs.</p>
+        <ExportActions
+          scope={filteredApplicationsScope}
+          disabled={applicationsLoading || Boolean(applicationsError)}
+          options={applicationExportOptions}
+        />
+      </div>
 
       <div className="panel">
         <div className="panel-toolbar">

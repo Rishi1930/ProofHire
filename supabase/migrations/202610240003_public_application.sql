@@ -133,7 +133,7 @@ begin
     job_record.workspace_id,
     job_record.id,
     candidate_record.id,
-    'applied',
+    'new',
     'public',
     nullif(trim(coalesce(p_cover_letter, '')), ''),
     p_resume_path,

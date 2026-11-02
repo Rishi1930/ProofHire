@@ -54,8 +54,7 @@ export default function RecruitmentApplicationList({
   const [actionError, setActionError] = useState('')
 
   async function openResume(application: ApplicationRecord) {
-    const resumePath =
-      application.resume_path ?? application.candidates?.resume_path
+    const resumePath = application.resume_path
     if (!resumePath) return
 
     const resumeWindow = window.open('about:blank', '_blank')
@@ -132,9 +131,7 @@ export default function RecruitmentApplicationList({
         </div>
       )}
       {applications.map((application) => {
-        const resumeAvailable = Boolean(
-          application.resume_path ?? application.candidates?.resume_path,
-        )
+        const resumeAvailable = Boolean(application.resume_path)
         const actions = actionsFor?.(application) ?? []
 
         return (

@@ -641,7 +641,7 @@ export default function Reports() {
         <div>
           <strong>Data definitions and limitations</strong>
           <p>
-            Funnel-like stage counts are a snapshot of each application's single current status, not historical transitions or conversion rates. Screening outcomes, match percentages, interview schedules, invitations, and feedback are not stored in the current schema. Aged review count uses an explicitly operational 7-day rule for applications currently marked New.
+            Stage counts are a snapshot of each application's current status, not historical transitions or conversion rates. Job-specific AI screening scores and evidence are available from Resume Screening; interview schedules, aptitude invitations, and feedback are not included in this report. Aged review count uses an explicitly operational 7-day rule for applications currently marked New.
             {pendingOlderThanWeek > 0 && !loading ? ` ${pendingOlderThanWeek} currently-new applications are older than 7 days.` : ''}
           </p>
         </div>

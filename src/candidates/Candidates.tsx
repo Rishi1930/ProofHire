@@ -17,7 +17,10 @@ import { supabase } from '../lib/supabase'
 import { downloadCsv, downloadXlsx } from '../lib/export'
 import {
   getApplicationExportColumns,
+  attachResumeToApplication,
+  uploadResumeForJob,
 } from '../recruitment/applicationData'
+import { isAllowedResumeFile } from '../lib/utils'
 import {
   createRecruitmentWorkbookSheets,
   loadWorkspaceRecruitmentExportData,
@@ -47,7 +50,6 @@ const emptyCandidate: CandidateFormValues = {
   phone: '',
   linkedin_url: '',
 }
-
 const statusLabels: Record<ApplicationStatus, string> = {
   new: 'New',
   screening: 'Screening',
@@ -126,6 +128,7 @@ export default function Candidates() {
   const [applicationCandidate, setApplicationCandidate] =
     useState<CandidateWithApplications | null>(null)
   const [selectedJobId, setSelectedJobId] = useState('')
+  const [applicationResume, setApplicationResume] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [errorDetails, setErrorDetails] = useState('')
@@ -294,8 +297,7 @@ export default function Candidates() {
         return {
           ...application,
           resume_path: null,
-          resume_available:
-            application.resume_available || Boolean(candidate?.resume_available),
+          resume_available: application.resume_available,
           status: application.status as ApplicationStatus,
           candidates: candidate
             ? {
@@ -445,6 +447,7 @@ export default function Candidates() {
   function openApplicationForm(candidate: CandidateWithApplications) {
     setApplicationCandidate(candidate)
     setSelectedJobId('')
+    setApplicationResume(null)
     setFormMode('application')
     setErrorMessage('')
     setSuccessMessage('')
@@ -461,14 +464,40 @@ export default function Candidates() {
     }
 
     setSaving(true)
+    let applicationId = ''
     try {
-      await createCandidateApplication(
+      applicationId = await createCandidateApplication(
         workspaceId,
         applicationCandidate.id,
         selectedJobId,
       )
+      if (applicationResume) {
+        try {
+          const resumePath = await uploadResumeForJob(
+            workspaceId,
+            selectedJobId,
+            applicationResume,
+          )
+          await attachResumeToApplication(
+            workspaceId,
+            applicationId,
+            selectedJobId,
+            resumePath,
+          )
+        } catch (error) {
+          setFormMode(null)
+          setApplicationCandidate(null)
+          setApplicationResume(null)
+          await loadData()
+          setErrorMessage(
+            `The application was created, but its resume could not be attached: ${getErrorMessage(error)}. You can upload it from Resume Screening.`,
+          )
+          return
+        }
+      }
       setFormMode(null)
       setApplicationCandidate(null)
+      setApplicationResume(null)
       setSuccessMessage('Application created successfully.')
       await loadData()
     } catch (error) {
@@ -833,6 +862,7 @@ export default function Candidates() {
             setFormMode(null)
             setEditingCandidate(null)
             setApplicationCandidate(null)
+            setApplicationResume(null)
           }}
         >
           {formMode === 'application' ? (
@@ -856,7 +886,34 @@ export default function Candidates() {
               </select>
               <p className="form-help">
                 The application starts with New status. Duplicate applications
-                for the same candidate and job are prevented.
+                for the same candidate and job are prevented. A resume is
+                optional and can also be attached later from Resume Screening.
+              </p>
+              <label className="field-label" htmlFor="candidate-application-resume">
+                Resume (optional)
+              </label>
+              <input
+                id="candidate-application-resume"
+                className="form-input"
+                type="file"
+                accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null
+                  if (file && !isAllowedResumeFile(file)) {
+                    setApplicationResume(null)
+                    setErrorMessage('Resume must be a non-empty PDF, DOC, or DOCX up to 5 MB.')
+                    event.target.value = ''
+                    return
+                  }
+                  setErrorMessage('')
+                  setApplicationResume(file)
+                }}
+                disabled={saving}
+              />
+              <p className="form-help">
+                {applicationResume
+                  ? `Selected: ${applicationResume.name}`
+                  : 'PDF, DOC, or DOCX. Stored privately and linked to this application.'}
               </p>
               <div className="modal-actions">
                 <button

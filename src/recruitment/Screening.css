@@ -1,0 +1,49 @@
+.screening-resume-upload {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #e8eaf1;
+  border-radius: 9px;
+  background: #f8f9fc;
+}
+
+.screening-resume-upload > p {
+  margin: 0 0 10px;
+  color: #6b7285;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.screening-resume-upload-label {
+  position: relative;
+  width: fit-content;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid #e5e7ef;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #fff;
+  color: #454b5d;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.screening-resume-upload-label:focus-within {
+  outline: 3px solid rgb(81 70 229 / 30%);
+  outline-offset: 2px;
+}
+
+.screening-resume-upload-label input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.screening-resume-upload-label input:disabled {
+  cursor: not-allowed;
+}

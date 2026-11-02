@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 
 import { supabase } from '../lib/supabase'
+import BrandMark from '../components/BrandMark'
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset'
 
@@ -147,7 +148,7 @@ export default function Auth() {
     <main className="auth-page">
       <section className="auth-visual">
         <Link to="/login" className="auth-brand">
-          <span className="brand-mark">P</span>
+          <BrandMark className="brand-mark" />
           <span>ProofHire</span>
         </Link>
 
@@ -187,7 +188,7 @@ export default function Auth() {
       <section className="auth-panel">
         <div className="auth-form-wrap">
           <div className="auth-mobile-brand">
-            <span className="brand-mark">P</span>
+            <BrandMark className="brand-mark" />
             <strong>ProofHire</strong>
           </div>
 

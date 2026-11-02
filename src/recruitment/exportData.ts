@@ -389,7 +389,7 @@ export function createRecruitmentWorkbookSheets(
     ['Recorded interview rounds', interviews.length],
     [
       'Screening assessments',
-      'Not available; no persisted assessment schema or scores are configured.',
+      'Persisted assessments are available in Resume Screening; this workbook summary does not include their details.',
     ],
     ...data.warnings.map((warning) => ['Data availability note', warning]),
   ]

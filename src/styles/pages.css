@@ -3665,7 +3665,151 @@
   background: #fffdf6;
 }
 
+.screening-assessment-list {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px 18px;
+}
+
+.screening-assessment-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #eceef4;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.screening-assessment-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.screening-assessment-heading h3 {
+  margin: 0 0 4px;
+  color: #303549;
+  font-size: 13px;
+}
+
+.screening-assessment-heading p,
+.screening-report p {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.screening-assessment-heading p {
+  margin: 0;
+  text-transform: capitalize;
+}
+
+.screening-score {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.screening-score strong {
+  color: var(--color-primary);
+  font-size: 19px;
+}
+
+.screening-score span,
+.screening-report-meta {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.screening-report {
+  padding-top: 13px;
+  margin-top: 13px;
+  border-top: 1px solid #f0f1f6;
+}
+
+.screening-report > p {
+  margin: 0 0 10px;
+}
+
+.screening-report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  text-transform: capitalize;
+}
+
+.screening-report details {
+  color: #485067;
+  font-size: 11px;
+}
+
+.screening-report summary {
+  width: fit-content;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.screening-report details > p {
+  margin: 10px 0;
+}
+
+.screening-finding-list {
+  display: grid;
+  gap: 12px;
+  padding-left: 18px;
+}
+
+.screening-finding-list li > strong {
+  text-transform: capitalize;
+}
+
+.screening-finding-list li > p {
+  margin: 4px 0;
+}
+
+.screening-finding-list blockquote {
+  padding-left: 10px;
+  margin: 6px 0;
+  border-left: 2px solid #d9d5ff;
+  color: #5d6380;
+  font-size: 10px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.screening-finding-list cite {
+  padding-left: 5px;
+  color: var(--color-text-muted);
+  font-style: normal;
+}
+
+.screening-failure {
+  margin: 12px 0;
+  color: #a33445;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 680px) {
+  .screening-assessment-list {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .screening-assessment-card {
+    padding: 12px;
+  }
+
+  .screening-report-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
   .recruitment-export-toolbar {
     align-items: stretch;
   }
@@ -3687,5 +3831,200 @@
   .export-menu-popover {
     right: auto;
     left: 0;
+  }
+}
+
+.aptitude-authoring {
+  display: grid;
+  gap: 20px;
+}
+
+.aptitude-authoring h2,
+.aptitude-question-form h3 {
+  margin: 0;
+}
+
+.aptitude-settings-grid,
+.aptitude-builder-controls,
+.aptitude-invite-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.aptitude-builder-controls {
+  grid-template-columns: repeat(2, minmax(170px, 1fr));
+}
+
+.aptitude-question-form,
+.aptitude-invite-link {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-background);
+}
+
+.aptitude-version-summary,
+.aptitude-question-card,
+.aptitude-result-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.aptitude-version-summary > div,
+.aptitude-question-card > div,
+.aptitude-result-card > div {
+  display: grid;
+  gap: 6px;
+}
+
+.aptitude-version-summary span,
+.aptitude-question-card p,
+.aptitude-result-card p {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.aptitude-question-card ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.aptitude-question-list,
+.aptitude-results-list {
+  display: grid;
+}
+
+.aptitude-invite-link p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.candidate-assessment-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: start center;
+  padding: clamp(20px, 5vw, 64px) 16px;
+  background: var(--color-background);
+}
+
+.candidate-assessment-card {
+  width: min(100%, 900px);
+  display: grid;
+  gap: 24px;
+  padding: clamp(20px, 4vw, 40px);
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface);
+  box-shadow: 0 16px 48px rgb(15 23 42 / 8%);
+}
+
+.candidate-assessment-header h1 {
+  margin: 8px 0;
+}
+
+.candidate-assessment-header > p {
+  color: var(--color-text-secondary);
+}
+
+.candidate-assessment-start,
+.candidate-assessment-result {
+  display: grid;
+  gap: 18px;
+}
+
+.aptitude-monitoring-disclosure,
+.candidate-assessment-timer {
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-background);
+}
+
+.candidate-consent,
+.candidate-question-options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.candidate-assessment-timer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 8px;
+  z-index: 1;
+}
+
+.candidate-assessment-timer strong {
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-assessment-questions {
+  display: grid;
+  gap: 18px;
+}
+
+.candidate-question {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.candidate-question legend {
+  max-width: 100%;
+  padding: 0 6px;
+  font-weight: 650;
+}
+
+.candidate-question legend span {
+  display: block;
+  margin-top: 5px;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.candidate-question-options {
+  display: grid;
+  gap: 12px;
+}
+
+.candidate-question-options label span {
+  min-width: 0;
+}
+
+.candidate-assessment-score {
+  margin: 0;
+  font-size: clamp(2rem, 8vw, 4rem);
+  font-weight: 750;
+}
+
+@media (max-width: 720px) {
+  .aptitude-settings-grid,
+  .aptitude-builder-controls,
+  .aptitude-invite-form {
+    grid-template-columns: 1fr;
+  }
+
+  .aptitude-version-summary,
+  .aptitude-question-card,
+  .aptitude-result-card {
+    flex-direction: column;
+  }
+
+  .candidate-assessment-card {
+    padding: 20px;
   }
 }

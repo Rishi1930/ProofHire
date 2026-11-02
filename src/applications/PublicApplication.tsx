@@ -6,6 +6,7 @@ import { ArrowLeft, BriefcaseBusiness, CheckCircle2, FileText, LoaderCircle, Upl
 import { supabase } from '../lib/supabase'
 import { uploadPublicResume } from '../lib/resumeStorage'
 import { getErrorMessage, isAllowedResumeFile } from '../lib/utils'
+import BrandMark from '../components/BrandMark'
 
 type PublicJob = {
   id: string
@@ -225,9 +226,7 @@ export default function PublicApplication() {
     <main className="public-application-page">
       <section className="public-application-card">
         <div className="public-application-brand">
-          <span className="public-application-brand-icon">
-            <BriefcaseBusiness size={21} />
-          </span>
+          <BrandMark className="public-application-brand-icon" />
           <span>ProofHire</span>
         </div>
 

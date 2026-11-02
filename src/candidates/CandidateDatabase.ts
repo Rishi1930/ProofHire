@@ -212,7 +212,7 @@ export async function createCandidateApplication(
   workspaceId: string,
   candidateId: string,
   jobId: string,
-): Promise<void> {
+): Promise<string> {
   const client = requireSupabase()
 
   const [{ data: candidate, error: candidateError }, { data: job, error: jobError }] =
@@ -249,17 +249,22 @@ export async function createCandidateApplication(
     throw new Error('This candidate already has an application for that job.')
   }
 
-  const { error } = await client.from('applications').insert({
-    workspace_id: workspaceId,
-    candidate_id: candidateId,
-    job_id: jobId,
-    status: 'new' satisfies ApplicationStatus,
-  })
+  const { data, error } = await client
+    .from('applications')
+    .insert({
+      workspace_id: workspaceId,
+      candidate_id: candidateId,
+      job_id: jobId,
+      status: 'new' satisfies ApplicationStatus,
+    })
+    .select('id')
+    .single()
 
   if (error?.code === '23505') {
     throw new Error('This candidate already has an application for that job.')
   }
   if (error) throw error
+  return data.id
 }
 
 export async function updateApplicationStatus(

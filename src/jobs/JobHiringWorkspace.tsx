@@ -10,9 +10,14 @@ import RecruitmentApplicationList from '../recruitment/RecruitmentApplicationLis
 import type {
   ApplicationDecisionEvent,
   ApplicationRecord,
+  ApplicationScreeningOverview,
   ApplicationStatus,
 } from '../recruitment/applicationData'
-import { getDecisionEvents, getResumeSignedUrl } from '../recruitment/applicationData'
+import {
+  getApplicationScreeningOverview,
+  getDecisionEvents,
+  getResumeSignedUrl,
+} from '../recruitment/applicationData'
 import { getApplicationExportColumns } from '../recruitment/applicationData'
 import { downloadCsv, downloadPdf, downloadXlsx } from '../lib/export'
 import { supabase } from '../lib/supabase'
@@ -49,9 +54,9 @@ type TabKey =
   | 'rejected'
   | 'strong'
   | 'confirmation'
-  | 'not-matched'
+  | 'unassessed'
 
-const tabs: { key: TabKey; label: string; configured?: boolean }[] = [
+const tabs: { key: TabKey; label: string }[] = [
   { key: 'all', label: 'All applications' },
   { key: 'review', label: 'Needs screening' },
   { key: 'screening', label: 'In screening' },
@@ -59,9 +64,9 @@ const tabs: { key: TabKey; label: string; configured?: boolean }[] = [
   { key: 'interview', label: 'Interviews' },
   { key: 'hired', label: 'Hired' },
   { key: 'rejected', label: 'Rejected' },
-  { key: 'strong', label: 'Strong matches', configured: false },
-  { key: 'confirmation', label: 'Needs confirmation', configured: false },
-  { key: 'not-matched', label: 'Not matched', configured: false },
+  { key: 'strong', label: 'Strong matches' },
+  { key: 'confirmation', label: 'Needs confirmation' },
+  { key: 'unassessed', label: 'Not assessed' },
 ]
 
 type Props = {
@@ -124,6 +129,9 @@ export default function JobHiringWorkspace({
   const [linkMessage, setLinkMessage] = useState('')
   const [decisionEvents, setDecisionEvents] = useState<ApplicationDecisionEvent[]>([])
   const [decisionEventsError, setDecisionEventsError] = useState('')
+  const [screeningOverview, setScreeningOverview] = useState<ApplicationScreeningOverview[]>([])
+  const [screeningError, setScreeningError] = useState('')
+  const [screeningLoading, setScreeningLoading] = useState(false)
   const [candidateActionError, setCandidateActionError] = useState('')
   const [openingResume, setOpeningResume] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
@@ -221,6 +229,45 @@ export default function JobHiringWorkspace({
     }
   }, [candidate, job.workspace_id])
 
+  useEffect(() => {
+    let active = true
+    if (!applications.length) {
+      setScreeningOverview([])
+      setScreeningError('')
+      setScreeningLoading(false)
+      return
+    }
+    setScreeningLoading(true)
+    setScreeningError('')
+    void getApplicationScreeningOverview(
+      job.workspace_id,
+      applications.map((application) => application.id),
+    )
+      .then((records) => {
+        if (active) setScreeningOverview(records)
+      })
+      .catch((caughtError: unknown) => {
+        if (!active) return
+        setScreeningOverview([])
+        setScreeningError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : 'Screening assessments are unavailable.',
+        )
+      })
+      .finally(() => {
+        if (active) setScreeningLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [applications, job.workspace_id])
+
+  const screeningByApplication = useMemo(
+    () => new Map(screeningOverview.map((record) => [record.application_id, record])),
+    [screeningOverview],
+  )
+
   const filteredApplications = useMemo(() => {
     const query = search.trim().toLowerCase()
     const selected = applications.filter((application) => {
@@ -234,7 +281,15 @@ export default function JobHiringWorkspace({
         (tab === 'shortlisted' && application.status === 'shortlisted') ||
         (tab === 'interview' && application.status === 'interview') ||
         (tab === 'hired' && application.status === 'hired') ||
-        (tab === 'rejected' && application.status === 'rejected')
+        (tab === 'rejected' && application.status === 'rejected') ||
+        (tab === 'strong' &&
+          screeningByApplication.get(application.id)?.report?.recommendation === 'strong_match') ||
+        (tab === 'confirmation' &&
+          ['review', 'needs_more_information'].includes(
+            screeningByApplication.get(application.id)?.report?.recommendation ?? '',
+          )) ||
+        (tab === 'unassessed' &&
+          !screeningByApplication.get(application.id)?.report)
       return matchesSearch && matchesTab
     })
 
@@ -248,7 +303,7 @@ export default function JobHiringWorkspace({
       const rightDate = new Date(right.applied_at ?? right.created_at).getTime()
       return sort === 'oldest' ? leftDate - rightDate : rightDate - leftDate
     })
-  }, [applications, search, sort, tab])
+  }, [applications, search, screeningByApplication, sort, tab])
 
   const counts: Record<TabKey, number | null> = {
     all: applications.length,
@@ -258,9 +313,17 @@ export default function JobHiringWorkspace({
     interview: applications.filter((item) => item.status === 'interview').length,
     hired: applications.filter((item) => item.status === 'hired').length,
     rejected: applications.filter((item) => item.status === 'rejected').length,
-    strong: null,
-    confirmation: null,
-    'not-matched': null,
+    strong: applications.filter(
+      (item) => screeningByApplication.get(item.id)?.report?.recommendation === 'strong_match',
+    ).length,
+    confirmation: applications.filter((item) =>
+      ['review', 'needs_more_information'].includes(
+        screeningByApplication.get(item.id)?.report?.recommendation ?? '',
+      ),
+    ).length,
+    unassessed: applications.filter(
+      (item) => !screeningByApplication.get(item.id)?.report,
+    ).length,
   }
   const latestDecisionByApplication = useMemo(() => {
     const map = new Map<string, string>()
@@ -284,8 +347,7 @@ export default function JobHiringWorkspace({
   }
 
   async function openCandidateResume() {
-    const resumePath =
-      candidate?.resume_path ?? candidate?.candidates?.resume_path
+    const resumePath = candidate?.resume_path
     if (!resumePath) return
     const resumeWindow = window.open('about:blank', '_blank')
     if (!resumeWindow) {
@@ -390,7 +452,10 @@ export default function JobHiringWorkspace({
         `Required skills: ${job.required_skills.join(', ') || 'Not specified'}`,
         `Preferred skills: ${job.preferred_skills.join(', ') || 'Not specified'}`,
         `Minimum experience: ${job.minimum_experience === null ? 'Not specified' : `${job.minimum_experience} years`}`,
-        'Screening assessment: Not available. Resume evidence, match scores, and AI assessment results are not persisted.',
+        `AI screening status: ${screeningByApplication.get(candidate.id)?.screening_status ?? 'not_queued'}`,
+        `AI recommendation: ${screeningByApplication.get(candidate.id)?.report?.recommendation ?? 'Not assessed'}`,
+        `AI evidence match score: ${screeningByApplication.get(candidate.id)?.match_score == null ? 'Not scored' : `${Math.round(screeningByApplication.get(candidate.id)!.match_score!)}%`}`,
+        `AI assessment summary: ${screeningByApplication.get(candidate.id)?.report?.summary ?? 'No persisted assessment is available.'}`,
         ...data.warnings,
       ],
       columns: [
@@ -401,6 +466,8 @@ export default function JobHiringWorkspace({
         { header: 'Application status', value: () => candidate.status },
         { header: 'Latest decision', value: () => review.latestDecision?.decision ?? 'None recorded' },
         { header: 'Interview rounds', value: () => review.interviews.length },
+        { header: 'AI match score (%)', value: () => screeningByApplication.get(candidate.id)?.match_score },
+        { header: 'AI recommendation', value: () => screeningByApplication.get(candidate.id)?.report?.recommendation },
       ],
       rows: [candidate],
       filename: `proofhire-candidate-review-${candidate.id}`,
@@ -428,12 +495,14 @@ export default function JobHiringWorkspace({
       `Preferred skills: ${job.preferred_skills.join(', ') || 'Not specified'}`,
       `Minimum experience: ${job.minimum_experience === null ? 'Not specified' : `${job.minimum_experience} years`}`,
       `Applications: ${jobApplications.length}`,
+      `Completed AI assessments: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report).length}`,
+      `Strong AI recommendations: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report?.recommendation === 'strong_match').length}`,
       ...statuses.map(
         (status) =>
           `${status[0].toUpperCase()}${status.slice(1)} applications: ${jobApplications.filter((application) => application.status === status).length}`,
       ),
       'Stage counts are a snapshot of each application’s current status, not historical transition counts.',
-      'Screening assessment scores and evidence are not configured and are not inferred.',
+      `AI screening results are recruiter-reviewed evidence, not automatic application decisions. ${screeningLoading ? 'Some results may still be loading.' : ''}`,
       ...data.warnings,
     ]
     const reportRows = createApplicationReportRows(jobApplications, data).map((record) => {
@@ -457,6 +526,10 @@ export default function JobHiringWorkspace({
         decision: record.latestDecision?.decision,
         interviewStatus: record.interviews.map((item) => item.interview_status).join('; '),
         interviewOutcome: record.interviews.map((item) => item.outcome).join('; '),
+        screeningStatus: screeningByApplication.get(application.id)?.screening_status ?? 'not_queued',
+        screeningScore: screeningByApplication.get(application.id)?.match_score,
+        screeningRecommendation: screeningByApplication.get(application.id)?.report?.recommendation,
+        screeningSummary: screeningByApplication.get(application.id)?.report?.summary,
       }
     })
     await downloadPdf({
@@ -477,6 +550,10 @@ export default function JobHiringWorkspace({
         { header: 'Recruiter decision', value: (row) => row.decision },
         { header: 'Interview status', value: (row) => row.interviewStatus },
         { header: 'Interview outcome', value: (row) => row.interviewOutcome },
+        { header: 'AI screening status', value: (row) => row.screeningStatus },
+        { header: 'AI match score (%)', value: (row) => row.screeningScore },
+        { header: 'AI recommendation', value: (row) => row.screeningRecommendation },
+        { header: 'AI assessment summary', value: (row) => row.screeningSummary },
       ],
       rows: reportRows,
       filename: `proofhire-${job.title}-recruitment-report`,
@@ -488,9 +565,42 @@ export default function JobHiringWorkspace({
       includeDecisions: true,
       includeInterviews: true,
     })
+    const jobApplications = data.applications.filter((application) => application.job_id === job.id)
+    const screeningRows = jobApplications.map((application) => {
+      const overview = screeningByApplication.get(application.id)
+      const candidateName =
+        data.candidates.find((candidateRecord) => candidateRecord.id === application.candidate_id)?.full_name ??
+        ''
+      return [
+        application.id,
+        candidateName,
+        overview?.screening_status ?? 'not_queued',
+        overview?.match_score ?? '',
+        overview?.report?.recommendation ?? '',
+        overview?.report?.confidence ?? '',
+        overview?.report?.evidence_coverage ?? '',
+        overview?.report?.summary ?? '',
+      ]
+    })
     await downloadXlsx(
       `proofhire-${job.title}-recruitment-workbook`,
-      createRecruitmentWorkbookSheets(data, { jobId: job.id }),
+      [
+        ...createRecruitmentWorkbookSheets(data, { jobId: job.id }),
+        {
+          name: 'AI Screening',
+          headers: [
+            'Application ID',
+            'Candidate',
+            'Queue status',
+            'Match score (%)',
+            'Recommendation',
+            'Confidence',
+            'Evidence coverage (%)',
+            'Summary',
+          ],
+          rows: screeningRows,
+        },
+      ],
     )
   }
 
@@ -511,12 +621,51 @@ export default function JobHiringWorkspace({
     )
   }
 
+  async function exportScreeningWorkbook() {
+    if (screeningError) throw new Error(screeningError)
+    const records = applications.map((application) => {
+      const overview = screeningByApplication.get(application.id)
+      return [
+        application.id,
+        application.candidates?.full_name ?? '',
+        application.jobs?.title ?? job.title,
+        overview?.screening_status ?? 'not_queued',
+        overview?.match_score ?? '',
+        overview?.report?.recommendation ?? '',
+        overview?.report?.confidence ?? '',
+        overview?.report?.evidence_coverage ?? '',
+        overview?.report?.summary ?? '',
+        JSON.stringify(overview?.report?.findings ?? []),
+        JSON.stringify(overview?.report?.follow_up_questions ?? []),
+      ]
+    })
+    await downloadXlsx(`proofhire-${job.title}-screening-assessments`, [
+      {
+        name: 'AI Screening',
+        headers: [
+          'Application ID',
+          'Candidate',
+          'Job',
+          'Queue status',
+          'Match score (%)',
+          'Recommendation',
+          'Confidence',
+          'Evidence coverage (%)',
+          'Summary',
+          'Requirement findings (JSON)',
+          'Recruiter follow-up questions (JSON)',
+        ],
+        rows: records,
+      },
+    ])
+  }
+
   const jobExportOptions = [
     { label: 'Complete Job Recruitment Report (PDF)', format: 'pdf' as const, onSelect: exportJobReportPdf, disabled: applicationsLoading || Boolean(applicationsError), reason: applicationsError || 'Job data is still loading.' },
     { label: 'Job and Applications Workbook (XLSX)', format: 'xlsx' as const, onSelect: exportJobWorkbook, disabled: applicationsLoading || Boolean(applicationsError), reason: applicationsError || 'Job data is still loading.' },
     { label: 'Applications List (CSV)', format: 'csv' as const, onSelect: exportJobApplications, disabled: applicationsLoading || Boolean(applicationsError), reason: applicationsError || 'Applications are still loading.' },
     { label: 'Unique Candidates for This Job (CSV)', format: 'csv' as const, onSelect: exportUniqueJobCandidates, disabled: applicationsLoading || Boolean(applicationsError), reason: applicationsError || 'Applications are still loading.' },
-    { label: 'Screening Assessment Report (XLSX)', format: 'xlsx' as const, disabled: true, reason: 'No persisted screening assessments exist in the current schema.' },
+    { label: 'Screening Assessment Report (XLSX)', format: 'xlsx' as const, onSelect: exportScreeningWorkbook, disabled: screeningLoading || Boolean(screeningError), reason: screeningError || 'Screening assessments are loading.' },
   ]
 
   return (
@@ -661,11 +810,15 @@ export default function JobHiringWorkspace({
           <div className="info-banner">
             <FileText size={18} />
             <div>
-              <strong>Screening scores and confirmation queues are not configured</strong>
+              <strong>
+                {screeningOverview.filter((item) => item.report).length} persisted AI assessment(s)
+              </strong>
               <p>
-                This workspace uses the application's current stage only.
-                Resume parsing, match evidence, and separate screening recommendations
-                require a screening backend and are not inferred from application status.
+                Assessments are job-specific, evidence-based assistance and never
+                change application status automatically. Review findings and queue
+                work from <Link to="/screening">Resume Screening</Link>.
+                {screeningLoading ? ' Loading assessment results…' : ''}
+                {screeningError ? ` Screening results unavailable: ${screeningError}` : ''}
               </p>
             </div>
           </div>
@@ -712,14 +865,13 @@ export default function JobHiringWorkspace({
                   type="button"
                   role="tab"
                   aria-selected={tab === item.key}
-                  aria-label={`${item.label}${item.configured === false ? ', screening data unavailable' : `, ${counts[item.key] ?? 0} applications`}`}
-                  className={`job-application-tab${tab === item.key ? ' active' : ''}${item.configured === false ? ' unavailable' : ''}`}
+                  aria-label={`${item.label}, ${counts[item.key] ?? 0} applications`}
+                  className={`job-application-tab${tab === item.key ? ' active' : ''}`}
                   key={item.key}
                   onClick={() => setTab(item.key)}
-                  title={item.configured === false ? 'No screening-result data is stored yet.' : undefined}
                 >
                   {item.label}
-                  <span>{item.configured === false ? '—' : counts[item.key]}</span>
+                  <span>{counts[item.key]}</span>
                 </button>
               ))}
             </div>
@@ -733,13 +885,10 @@ export default function JobHiringWorkspace({
                 <h3>Applications unavailable</h3>
                 <p>Resolve the workspace query error above and refresh the page.</p>
               </div>
-            ) : tab === 'strong' || tab === 'confirmation' || tab === 'not-matched' ? (
+            ) : filteredApplications.length === 0 && (tab === 'strong' || tab === 'confirmation' || tab === 'unassessed') ? (
               <div className="empty-state">
-                <h3>Screening data unavailable</h3>
-                <p>
-                  No screening results are stored for this job. Candidate matching
-                  categories are deliberately not inferred from hiring status.
-                </p>
+                <h3>No candidates in this assessment group</h3>
+                <p>Queue resume screening from the Resume Screening page to populate evidence-based categories.</p>
               </div>
             ) : (
               <RecruitmentApplicationList
@@ -859,7 +1008,7 @@ export default function JobHiringWorkspace({
                 {candidate.candidates?.linkedin_url && (
                   <p>LinkedIn: {candidate.candidates.linkedin_url}</p>
                 )}
-                {candidate.candidates?.resume_path || candidate.resume_path ? (
+                {candidate.resume_path ? (
                   <Button
                     variant="secondary"
                     loading={openingResume}
@@ -868,7 +1017,11 @@ export default function JobHiringWorkspace({
                     Open private resume
                   </Button>
                 ) : (
-                  <p>No resume is attached to this application.</p>
+                  <p>
+                    No resume is attached to this application. Candidate-level
+                    files are not assumed to belong to this job; upload it from{' '}
+                    <Link to="/screening">Resume Screening</Link>.
+                  </p>
                 )}
                 {candidateActionError && (
                   <p className="form-alert form-alert-error" role="alert">
@@ -888,10 +1041,47 @@ export default function JobHiringWorkspace({
               </section>
               <section className="candidate-report-section">
                 <h3>Screening evidence</h3>
-                <p>
-                  Resume text extraction and screening evidence are not available.
-                  No match percentage or skill assessment is generated.
-                </p>
+                {screeningLoading ? (
+                  <p>Loading this application's screening assessment…</p>
+                ) : screeningError ? (
+                  <p className="form-alert form-alert-error" role="alert">
+                    Screening assessment is unavailable: {screeningError}
+                  </p>
+                ) : screeningByApplication.get(candidate.id)?.report ? (
+                  <>
+                    <p>
+                      <strong>
+                        {screeningByApplication.get(candidate.id)?.match_score == null
+                          ? 'Not scored'
+                          : `${Math.round(screeningByApplication.get(candidate.id)?.match_score ?? 0)}% match`}
+                      </strong>
+                      {' · Recommendation: '}
+                      {screeningByApplication.get(candidate.id)?.report?.recommendation?.replace(/_/g, ' ')}
+                    </p>
+                    <p>{screeningByApplication.get(candidate.id)?.report?.summary}</p>
+                    <details>
+                      <summary>Review requirement evidence</summary>
+                      <ul className="screening-finding-list">
+                        {screeningByApplication.get(candidate.id)?.report?.findings.map((finding) => (
+                          <li key={finding.requirement_key}>
+                            <strong>{finding.requirement_key.replace(/_/g, ' ')}: {finding.status.replace(/_/g, ' ')}</strong>
+                            <p>{finding.explanation}</p>
+                            {finding.evidence.map((item, index) => (
+                              <blockquote key={`${finding.requirement_key}-${index}`}>
+                                “{item.excerpt}” <cite>{item.source}</cite>
+                              </blockquote>
+                            ))}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </>
+                ) : (
+                  <p>
+                    No completed assessment is available. Queue this application
+                    from <Link to="/screening">Resume Screening</Link>.
+                  </p>
+                )}
               </section>
               <section className="candidate-report-section">
                 <h3>Recorded recruiter and interview history</h3>
@@ -970,8 +1160,11 @@ export default function JobHiringWorkspace({
               recruiter/interview outcomes. No resume URL or resume content is included.
             </p>
             <p className="form-help">
-              Screening scores and evidence are unavailable because no persisted
-              assessment records exist.
+              AI assessment: {screeningByApplication.get(candidate.id)?.report?.recommendation?.replace(/_/g, ' ') ?? 'Not available'}
+              {screeningByApplication.get(candidate.id)?.match_score == null
+                ? ''
+                : ` · ${Math.round(screeningByApplication.get(candidate.id)?.match_score ?? 0)}% match`}
+              . Recruiter review is required; application stage is not changed automatically.
             </p>
           </div>
           <div className="modal-actions share-profile-actions">
@@ -1001,8 +1194,8 @@ export default function JobHiringWorkspace({
           <div className="external-share-unavailable">
             <strong>External assessment link unavailable</strong>
             <p>
-              Secure external sharing requires a revocable, expiring share-link
-              record and server-side token validation. No public link has been created.
+              Public aptitude test invitations are issued separately from profile
+              sharing and are manually delivered with an expiring, single-use token.
             </p>
           </div>
         </Modal>

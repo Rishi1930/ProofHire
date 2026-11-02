@@ -15,6 +15,10 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if err := config.LoadBackendEnv(); err != nil {
+		logger.Error("backend environment file could not be loaded", "error", err)
+		os.Exit(1)
+	}
 	handler, err := httpapi.NewHandlerFromEnvironment(logger)
 	if err != nil {
 		logger.Error("backend configuration is invalid", "error", err)

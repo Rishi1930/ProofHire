@@ -12,13 +12,24 @@ Run migrations in timestamp order from the Supabase SQL Editor or Supabase CLI.
 8. `202610260004_public_application_status_and_duplicates.sql`
 9. `202610260005_candidate_workspace_email_normalized_unique.sql`
 10. `202610260006_recruiter_decisions_and_interviews.sql`
+11. `202610290001_screening_pipeline.sql`
+12. `202610290002_account_deletion_and_screening_indexes.sql`
+13. `202610290003_aptitude_assessment_schema.sql`
+14. `202610290004_application_resume_versions.sql`
+15. `202610290005_status_default_and_deletion_indexes.sql`
+16. `202610290006_application_notes.sql`
+17. `202610290007_aptitude_assessment_workflow.sql`
+18. `202611020001_application_stage_history_and_interviews.sql`
+19. `202611020002_aptitude_assessment_foundation_completion.sql`
+20. `202611020003_coding_assessment_and_email_delivery.sql`
 
-The latest migration adds company profile fields and a 15-day account
-deletion queue. A returning recruiter can cancel a pending request by signing
-in again. Once the grace period passes, the purge worker removes that
-recruiter's account. Shared workspace records are retained and attributed to
-another active member; when the recruiter was the only workspace member, the
-workspace data and its candidate resume files are deleted.
+Migration `202610260002_workspace_profile_and_account_deletion.sql` adds
+company profile fields and a 15-day account deletion queue. A returning
+recruiter can cancel a pending request by signing in again. Once the grace
+period passes, the purge worker removes that recruiter's account. Shared
+workspace records are retained and attributed to another active member; when
+the recruiter was the only workspace member, the workspace data and its
+candidate resume files are deleted.
 
 The candidate-management migration adds LinkedIn URLs, allows candidates to
 omit email, and aligns application statuses to `new`, `screening`,
@@ -47,6 +58,84 @@ status, outcome, and feedback; immutable workspace, application, and creator
 fields are not updateable by clients. This migration does not send email,
 create invitations, or grant anonymous access. It must be applied before the
 corresponding decision-history and interview-management UI can persist data.
+
+The screening migration adds the persistent AI-screening queue, assessment
+history, recruiter RPCs, and service-role worker operations. The next migration
+allows account deletion to retain decision and interview history by clearing a
+deleted user's actor reference, and adds an index for expired screening leases.
+The aptitude schema migration adds workspace-scoped test definitions,
+immutable published versions, questions, private answer keys, invitations,
+attempts, answers, and monitoring events. The follow-up aptitude workflow
+migration adds draft answer-key authoring, authenticated invitation creation,
+service-mediated candidate sessions, answer autosave, timer enforcement,
+server-side scoring, and limited browser-event monitoring. Candidate APIs
+return questions and options but never answer keys. Invitations are manually
+delivered; this repository does not send assessment emails.
+
+The resume-version migration backfills application resume paths into an
+application-scoped history table, captures future resume-path changes, and
+associates newly queued screening work with the exact resume version while
+retaining `applications.resume_path` for existing callers.
+
+The status-default migration changes `applications.status` from the original
+`applied` default to the currently allowed `new` value and indexes pending and
+stale-processing account-deletion requests.
+
+The application-notes migration provides an append-only recruiter note stream
+with workspace/application foreign-key checks. A recruiter-notes UI is not
+implemented yet.
+
+The application-stage and interview migration records the known current stage
+for existing applications without fabricating earlier transitions, then
+captures future status changes. It adds interview schedule-change history,
+interviewer assignments, structured feedback, and scheduling metadata without
+replacing existing interview records. The aptitude foundation completion
+migration adds job-specific assessment configuration, randomized per-attempt
+question order, category/difficulty metadata, and private question-level
+scores; submitted attempts already in the database receive a score-detail
+backfill.
+
+The coding migration adds immutable challenge versions, private test cases and
+submission source, job configuration, invitations/attempts, and a lease-based
+evaluation queue. It deliberately does not execute submitted code or implement
+a runner. The email migration tracks invitations and scheduling notices in an
+idempotent delivery queue; it deliberately does not connect to an email
+provider or claim that a message was sent. The application summary view reports
+screening, aptitude, coding, and interview results separately and does not
+calculate a composite hiring score.
+
+See [`../database-architecture.md`](../database-architecture.md) for the
+repository audit, relationships, access matrix, migration caveats, and safe
+fresh-test-database procedure. The migrations have not been replayed against a
+local database or verified against the live Supabase project.
+
+## Fresh local test database
+
+The repository has no Supabase project link metadata. Use a dedicated local
+Supabase instance with Docker Desktop; do not link or point these commands at
+production. Check `supabase status` and confirm the database endpoint is
+loopback before applying or inspecting migrations.
+
+```powershell
+npx supabase --version
+npx supabase start
+npx supabase status
+npx supabase db reset
+npx supabase migration list --local
+```
+
+`db reset` rebuilds the local database and deletes its local data. Run it only
+for a disposable local test instance with no data to preserve. It does not
+validate a linked hosted project. For a dedicated hosted test project, first
+verify its project reference in the Supabase dashboard, then use the CLI's
+`db push --dry-run` before any push and inspect the resulting plan. Do not use
+`--linked` with `db reset`, and do not apply these migrations to production.
+
+After migrations apply locally, inspect the schema, constraints, grants, RLS,
+functions, and storage policies using the read-only verification queries in
+the architecture document. Verify public application submission with a test
+job and disposable candidate data. The local database test does not verify
+external Gemini, email, OCR, or hosted Storage behavior.
 
 ## Deploy and schedule account deletion
 

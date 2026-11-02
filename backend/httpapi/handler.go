@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/rishi1930/proofhire/backend/aptitude"
 	"github.com/rishi1930/proofhire/backend/config"
 	"github.com/rishi1930/proofhire/backend/supabaseauth"
 )
@@ -26,18 +27,46 @@ type accessVerifier interface {
 
 type apiHandler struct {
 	verifier accessVerifier
+	aptitude aptitudeService
 	logger   *slog.Logger
 }
 
+type aptitudeService interface {
+	CreateInvitation(context.Context, aptitude.InvitationInput) (aptitude.Invitation, string, error)
+	CandidateSession(context.Context, string) (json.RawMessage, error)
+	StartAttempt(context.Context, string) (json.RawMessage, error)
+	SaveAnswer(context.Context, string, string, string, json.RawMessage) error
+	SubmitAttempt(context.Context, string, string) (json.RawMessage, error)
+	RecordEvent(context.Context, string, string, string, json.RawMessage) error
+}
+
 func NewHandler(verifier accessVerifier, logger *slog.Logger) http.Handler {
+	return NewHandlerWithAptitude(verifier, nil, logger)
+}
+
+func NewHandlerWithAptitude(
+	verifier accessVerifier,
+	aptitudeClient aptitudeService,
+	logger *slog.Logger,
+) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	handler := &apiHandler{verifier: verifier, logger: logger}
+	handler := &apiHandler{
+		verifier: verifier,
+		aptitude: aptitudeClient,
+		logger:   logger,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handler.health)
 	mux.HandleFunc("GET /api/v1/me", handler.currentUser)
 	mux.HandleFunc("GET /api/v1/workspace-access", handler.workspaceAccess)
+	mux.HandleFunc("POST /api/v1/aptitude/invitations", handler.createAptitudeInvitation)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/session", handler.getAptitudeCandidateSession)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/start", handler.startAptitudeCandidateAttempt)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/answer", handler.saveAptitudeCandidateAnswer)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/submit", handler.submitAptitudeCandidateAttempt)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/event", handler.recordAptitudeCandidateEvent)
 	return handler.withRequestID(mux)
 }
 
@@ -46,7 +75,19 @@ func NewHandlerFromEnvironment(logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewHandler(supabaseauth.NewClient(environment), logger), nil
+	var aptitudeClient aptitudeService
+	if environment.SupabaseSecretKey != "" || environment.SupabaseServiceRoleKey != "" {
+		client, err := aptitude.NewClient(environment)
+		if err != nil {
+			return nil, err
+		}
+		aptitudeClient = client
+	}
+	return NewHandlerWithAptitude(
+		supabaseauth.NewClient(environment),
+		aptitudeClient,
+		logger,
+	), nil
 }
 
 func (handler *apiHandler) health(writer http.ResponseWriter, _ *http.Request) {

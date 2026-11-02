@@ -5,6 +5,18 @@ import {
   updateApplicationStatus,
   type ApplicationStatus,
 } from '../candidates/CandidateDatabase'
+import {
+  createSafeFilename,
+  getFileExtension,
+  isAllowedResumeFile,
+} from '../lib/utils'
+
+const RESUME_BUCKET = 'candidate-resumes'
+const RESUME_MIME_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
 
 export type ApplicationRecord = {
   id: string
@@ -40,6 +52,67 @@ export type RecruiterDecision =
   | 'return_to_screening'
   | 'mark_hired'
 
+export type ScreeningRequirementFinding = {
+  requirement_key: string
+  status:
+    | 'supported'
+    | 'partially_supported'
+    | 'evidence_missing'
+    | 'not_met'
+    | 'unable_to_determine'
+  explanation: string
+  evidence: Array<{ excerpt: string; source: string }>
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export type ScreeningReport = {
+  summary: string
+  recommendation: 'strong_match' | 'review' | 'needs_more_information'
+  confidence: 'high' | 'medium' | 'low'
+  strengths: string[]
+  potential_gaps: string[]
+  missing_evidence: string[]
+  follow_up_questions: string[]
+  findings: ScreeningRequirementFinding[]
+  evidence_coverage: number
+  scoring_method: string
+}
+
+export type ScreeningCriteria = {
+  summary: string
+  experience_mandatory: boolean
+  clarifications: string[]
+  requirements: Array<{
+    key: string
+    name: string
+    description: string
+    priority: 'essential' | 'preferred'
+    category: string
+  }>
+}
+
+export type ApplicationScreeningOverview = {
+  application_id: string
+  screening_status:
+    | 'not_queued'
+    | 'pending'
+    | 'processing'
+    | 'retry_wait'
+    | 'waiting_configuration'
+    | 'completed'
+    | 'failed'
+    | 'superseded'
+  attempts: number
+  failure_reason: string | null
+  last_error_code: string | null
+  assessment_id: string | null
+  assessment_version: number | null
+  match_score: number | null
+  report: ScreeningReport | null
+  criteria: ScreeningCriteria | null
+  assessed_at: string | null
+}
+
 export function getApplicationExportColumns(
   decisions?: Map<string, string>,
 ): ExportColumn<ApplicationRecord>[] {
@@ -57,12 +130,7 @@ export function getApplicationExportColumns(
     { header: 'Source', value: (record) => record.source },
     {
       header: 'Resume attached',
-      value: (record) =>
-        Boolean(
-          record.resume_available ||
-            record.resume_path ||
-            record.candidates?.resume_path,
-        ),
+      value: (record) => Boolean(record.resume_available || record.resume_path),
     },
   ]
   if (decisions) {
@@ -77,6 +145,91 @@ export function getApplicationExportColumns(
 function requireSupabase() {
   if (!supabase) throw new Error('Supabase is not configured.')
   return supabase
+}
+
+export async function getApplicationScreeningOverview(
+  workspaceId: string,
+  applicationIds: string[],
+): Promise<ApplicationScreeningOverview[]> {
+  if (applicationIds.length === 0) return []
+  const client = requireSupabase()
+  const records: ApplicationScreeningOverview[] = []
+  for (let start = 0; start < applicationIds.length; start += 100) {
+    const { data, error } = await client.rpc('get_application_screening_overview', {
+      target_workspace_id: workspaceId,
+      target_application_ids: applicationIds.slice(start, start + 100),
+    })
+    if (error) throw error
+    records.push(...((data ?? []) as unknown as ApplicationScreeningOverview[]))
+  }
+  return records
+}
+
+export async function requestApplicationScreening(
+  applicationId: string,
+): Promise<void> {
+  const { error } = await requireSupabase().rpc(
+    'request_application_screening',
+    { target_application_id: applicationId },
+  )
+  if (error) throw error
+}
+
+export async function uploadResumeForJob(
+  workspaceId: string,
+  jobId: string,
+  file: File,
+): Promise<string> {
+  if (!isAllowedResumeFile(file)) {
+    throw new Error('Choose a non-empty PDF, DOC, or DOCX resume up to 5 MB.')
+  }
+
+  const extension = getFileExtension(file.name)
+  const contentType = RESUME_MIME_TYPES[extension]
+  if (!contentType) throw new Error('The selected resume format is unsupported.')
+
+  const resumePath = `${workspaceId}/${jobId}/${crypto.randomUUID()}-${createSafeFilename(file.name)}`
+  const { error } = await requireSupabase()
+    .storage.from(RESUME_BUCKET)
+    .upload(resumePath, file, { contentType, upsert: false })
+
+  if (error) throw new Error(`Resume upload failed: ${error.message}`)
+  return resumePath
+}
+
+export async function attachResumeToApplication(
+  workspaceId: string,
+  applicationId: string,
+  jobId: string,
+  resumePath: string,
+): Promise<void> {
+  const pathParts = resumePath.split('/')
+  if (
+    pathParts.length !== 3 ||
+    pathParts[0] !== workspaceId ||
+    pathParts[1] !== jobId ||
+    !/^[0-9a-f-]{36}$/i.test(jobId) ||
+    !/^[A-Za-z0-9_-]+\.(pdf|doc|docx)$/i.test(pathParts[2])
+  ) {
+    throw new Error('The uploaded resume is not scoped to this workspace and job.')
+  }
+
+  const { data, error } = await requireSupabase()
+    .from('applications')
+    .update({ resume_path: resumePath })
+    .eq('id', applicationId)
+    .eq('workspace_id', workspaceId)
+    .eq('job_id', jobId)
+    .is('resume_path', null)
+    .select('id')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) {
+    throw new Error(
+      'This application already has a resume or is no longer available. Refresh before trying again.',
+    )
+  }
 }
 
 export async function getWorkspaceApplications(
@@ -109,7 +262,7 @@ export type ApplicationDecisionEvent = {
   workspace_id: string
   decision: RecruiterDecision
   note: string | null
-  created_by: string
+  created_by: string | null
   created_at: string
 }
 
