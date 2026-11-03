@@ -40,7 +40,7 @@ func TestCreateInvitationUsesServerOnlyCredentialAndStoresTokenHash(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				if request.URL.Path != "/rest/v1/rpc/create_aptitude_invitation" {
+				if request.URL.Path != "/rest/v1/rpc/create_automated_aptitude_invitation" {
 					t.Errorf("request path = %q", request.URL.Path)
 				}
 				if request.Header.Get("apikey") != test.wantAPIKey ||
@@ -52,8 +52,14 @@ func TestCreateInvitationUsesServerOnlyCredentialAndStoresTokenHash(t *testing.T
 					t.Errorf("decode RPC payload: %v", err)
 				}
 				hash, ok := payload["target_token_hash"].(string)
-				if !ok || len(hash) != 64 || payload["token"] != nil {
-					t.Error("request should contain only the hashed invitation token")
+				rawToken, tokenOK := payload["target_token"].(string)
+				if !ok || len(hash) != 64 || !tokenOK || len(rawToken) != 43 {
+					t.Error("request should contain the token and its hash for private storage")
+				} else {
+					sum := sha256.Sum256([]byte(rawToken))
+					if hash != hex.EncodeToString(sum[:]) {
+						t.Error("invitation token hash does not match the token")
+					}
 				}
 				_, _ = io.WriteString(writer, `{"id":"12345678-1234-1234-1234-123456789abc","workspace_id":"82ef1fb1-47c7-4c5e-8118-e78d33b58e1d","application_id":"9ba0fef4-10e6-41f0-81aa-7ec52a7f9e77","test_version_id":"1bfeb683-e931-4ce0-a555-f70f976f4a19","candidate_email":"candidate@example.test","test_title":"Test","status":"pending","expires_at":"2030-01-01T00:00:00Z","max_attempts":1,"email_status":"failed"}`)
 			}))
@@ -119,6 +125,44 @@ func TestCandidateSessionHashesInvitationToken(t *testing.T) {
 	}
 	if !json.Valid(response) || strings.Contains(string(response), token) {
 		t.Fatal("candidate response is invalid or echoed the invitation token")
+	}
+}
+
+func TestSaveProgressPersistsAnswerAndQuestionPosition(t *testing.T) {
+	const token = "Abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/rest/v1/rpc/save_aptitude_candidate_progress" {
+			t.Errorf("request path = %q", request.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode RPC payload: %v", err)
+		}
+		if payload["target_question_index"] != float64(2) ||
+			payload["target_question_id"] != "1bfeb683-e931-4ce0-a555-f70f976f4a19" ||
+			payload["target_answer"] == nil {
+			t.Errorf("unexpected progress payload: %#v", payload)
+		}
+		_, _ = io.WriteString(writer, "true")
+	}))
+	defer server.Close()
+	client, err := NewClient(config.Config{
+		SupabaseURL:       server.URL,
+		SupabaseSecretKey: "sb_secret_test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.SaveProgress(
+		context.Background(),
+		token,
+		"12345678-1234-1234-1234-123456789abc",
+		"1bfeb683-e931-4ce0-a555-f70f976f4a19",
+		2,
+		json.RawMessage(`{"option_ids":["abc"]}`),
+	)
+	if err != nil {
+		t.Fatalf("SaveProgress() error = %v", err)
 	}
 }
 

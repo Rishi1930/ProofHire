@@ -1,4 +1,4 @@
-// Future module: AI resume parsing and rubric-based screening.
+// Legacy placeholder; the active screening workflow lives in recruitment/Screening.
 export default function Screening() {
   return null
 }

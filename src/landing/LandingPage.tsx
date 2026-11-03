@@ -24,7 +24,7 @@ const plans = [
     tag: 'FOR SMALL TEAMS',
     features: [
       '1 active job posting',
-      '250 AI resume screenings/mo',
+      '250 evidence-based resume screenings/mo',
       'Basic candidate analytics',
       'Email support',
     ],
@@ -36,7 +36,7 @@ const plans = [
     tag: 'MOST POPULAR',
     features: [
       'Unlimited active job listings',
-      '1,500 AI resume screenings/mo',
+      '1,500 evidence-based resume screenings/mo',
       'Custom skill-proof challenges',
       'Hiring pipeline analytics',
       'Dedicated success manager',
@@ -77,7 +77,7 @@ function DashboardPreview() {
   return (
     <div className="ph-dashboard-wrap">
       <div className="ph-float-label">
-        <Sparkles size={12} /> AI SCREENING ACTIVE
+        <Sparkles size={12} /> DETERMINISTIC SCREENING PREVIEW
       </div>
       <div className="ph-dashboard">
         <div className="ph-window-bar">
@@ -87,7 +87,7 @@ function DashboardPreview() {
             <i />
           </span>
           <span>app.proofhire.ai / pipeline</span>
-          <span className="ph-live">● LIVE</span>
+          <span className="ph-live">● DEMO DATA</span>
         </div>
         <div className="ph-dash-content">
           <div className="ph-metrics">
@@ -106,7 +106,7 @@ function DashboardPreview() {
           </div>
           <div className="ph-progress-label">
             <span>Screening progress</span>
-            <span>AI assessment</span>
+            <span>Evidence-based assessment</span>
           </div>
           <div className="ph-progress">
             <i />
@@ -329,7 +329,7 @@ export default function LandingPage() {
               Features
             </a>
             <a href="#demo" onClick={closeMenu}>
-              AI Demo
+              Screening Demo
             </a>
             <a href="#how" onClick={closeMenu}>
               How it works
@@ -365,7 +365,7 @@ export default function LandingPage() {
               not promises.
             </h1>
             <p className="ph-hero-sub">
-              The high-precision recruitment workspace that unifies AI resume
+              The recruitment workspace that unifies deterministic resume
               screening, verified skill proofs, and a single hiring pipeline —
               so every decision is backed by evidence.
             </p>
@@ -374,11 +374,11 @@ export default function LandingPage() {
                 Start free trial <ArrowRight size={14} />
               </Link>
               <a className="ph-btn ph-btn-ghost" href="#demo">
-                <ArrowDownRight size={14} /> Try the AI demo
+                <ArrowDownRight size={14} /> Try the screening demo
               </a>
             </div>
             <div className="ph-trust">
-              <span>AI-assisted screening</span>
+              <span>Evidence-based screening</span>
               <i />
               <span>Skills-first hiring</span>
               <i />
@@ -391,7 +391,7 @@ export default function LandingPage() {
           <div>
             {[
               'HIRE WITH PROOF',
-              'AI SCREENING',
+              'DETERMINISTIC SCREENING',
               'VERIFIED SKILL PROOFS',
               'UNIFIED PIPELINE',
               'ZERO-BIAS SHORTLISTS',
@@ -417,7 +417,7 @@ export default function LandingPage() {
               {
                 type: 'match' as const,
                 icon: <BrainCircuit size={17} />,
-                title: 'AI Candidate Match Score',
+                title: 'Evidence-backed Candidate Match Score',
                 description:
                   'Instantly surface the strongest candidates against your role criteria with a clear, evidence-based match score.',
               },
@@ -473,7 +473,7 @@ export default function LandingPage() {
       <section className="ph-section ph-demo-section" id="demo">
         <div className="ph-container">
           <div className="ph-section-title">
-            <span className="ph-eyebrow">LIVE AI SCREENING</span>
+            <span className="ph-eyebrow">ILLUSTRATIVE SCREENING PREVIEW</span>
             <h2>Watch the engine think.</h2>
             <p>
               Pick a candidate, choose a role, and preview how a screening
@@ -684,7 +684,7 @@ export default function LandingPage() {
             <div>
               <b>PRODUCT</b>
               <a href="#features">Features</a>
-              <a href="#demo">AI Demo</a>
+              <a href="#demo">Screening Demo</a>
               <a href="#how">How it works</a>
               <a href="#pricing">Pricing</a>
             </div>

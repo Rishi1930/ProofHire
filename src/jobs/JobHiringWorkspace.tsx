@@ -451,11 +451,11 @@ export default function JobHiringWorkspace({
         `Interview records: ${interviewSummary}`,
         `Required skills: ${job.required_skills.join(', ') || 'Not specified'}`,
         `Preferred skills: ${job.preferred_skills.join(', ') || 'Not specified'}`,
-        `Minimum experience: ${job.minimum_experience === null ? 'Not specified' : `${job.minimum_experience} years`}`,
-        `AI screening status: ${screeningByApplication.get(candidate.id)?.screening_status ?? 'not_queued'}`,
-        `AI recommendation: ${screeningByApplication.get(candidate.id)?.report?.recommendation ?? 'Not assessed'}`,
-        `AI evidence match score: ${screeningByApplication.get(candidate.id)?.match_score == null ? 'Not scored' : `${Math.round(screeningByApplication.get(candidate.id)!.match_score!)}%`}`,
-        `AI assessment summary: ${screeningByApplication.get(candidate.id)?.report?.summary ?? 'No persisted assessment is available.'}`,
+        `Minimum experience: ${job.minimum_experience === null || job.minimum_experience === 0 ? 'Not specified' : `${job.minimum_experience} years`}`,
+        `Resume screening status: ${screeningByApplication.get(candidate.id)?.screening_status ?? 'not_queued'}`,
+        `Deterministic recommendation: ${screeningByApplication.get(candidate.id)?.report?.recommendation ?? 'Not assessed'}`,
+        `Evidence match score: ${screeningByApplication.get(candidate.id)?.match_score == null ? 'Not scored' : `${Math.round(screeningByApplication.get(candidate.id)!.match_score!)}%`}`,
+        `Deterministic assessment summary: ${screeningByApplication.get(candidate.id)?.report?.summary ?? 'No persisted assessment is available.'}`,
         ...data.warnings,
       ],
       columns: [
@@ -466,8 +466,8 @@ export default function JobHiringWorkspace({
         { header: 'Application status', value: () => candidate.status },
         { header: 'Latest decision', value: () => review.latestDecision?.decision ?? 'None recorded' },
         { header: 'Interview rounds', value: () => review.interviews.length },
-        { header: 'AI match score (%)', value: () => screeningByApplication.get(candidate.id)?.match_score },
-        { header: 'AI recommendation', value: () => screeningByApplication.get(candidate.id)?.report?.recommendation },
+        { header: 'Evidence match score (%)', value: () => screeningByApplication.get(candidate.id)?.match_score },
+        { header: 'Deterministic recommendation', value: () => screeningByApplication.get(candidate.id)?.report?.recommendation },
       ],
       rows: [candidate],
       filename: `proofhire-candidate-review-${candidate.id}`,
@@ -493,16 +493,16 @@ export default function JobHiringWorkspace({
       `Description: ${job.description || 'Not provided'}`,
       `Required skills: ${job.required_skills.join(', ') || 'Not specified'}`,
       `Preferred skills: ${job.preferred_skills.join(', ') || 'Not specified'}`,
-      `Minimum experience: ${job.minimum_experience === null ? 'Not specified' : `${job.minimum_experience} years`}`,
+      `Minimum experience: ${job.minimum_experience === null || job.minimum_experience === 0 ? 'Not specified' : `${job.minimum_experience} years`}`,
       `Applications: ${jobApplications.length}`,
-      `Completed AI assessments: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report).length}`,
-      `Strong AI recommendations: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report?.recommendation === 'strong_match').length}`,
+      `Completed deterministic assessments: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report).length}`,
+      `Strong deterministic matches: ${jobApplications.filter((application) => screeningByApplication.get(application.id)?.report?.recommendation === 'strong_match').length}`,
       ...statuses.map(
         (status) =>
           `${status[0].toUpperCase()}${status.slice(1)} applications: ${jobApplications.filter((application) => application.status === status).length}`,
       ),
       'Stage counts are a snapshot of each application’s current status, not historical transition counts.',
-      `AI screening results are recruiter-reviewed evidence, not automatic application decisions. ${screeningLoading ? 'Some results may still be loading.' : ''}`,
+      `Deterministic screening results are evidence for recruiter review, not automatic application decisions. ${screeningLoading ? 'Some results may still be loading.' : ''}`,
       ...data.warnings,
     ]
     const reportRows = createApplicationReportRows(jobApplications, data).map((record) => {
@@ -550,10 +550,10 @@ export default function JobHiringWorkspace({
         { header: 'Recruiter decision', value: (row) => row.decision },
         { header: 'Interview status', value: (row) => row.interviewStatus },
         { header: 'Interview outcome', value: (row) => row.interviewOutcome },
-        { header: 'AI screening status', value: (row) => row.screeningStatus },
-        { header: 'AI match score (%)', value: (row) => row.screeningScore },
-        { header: 'AI recommendation', value: (row) => row.screeningRecommendation },
-        { header: 'AI assessment summary', value: (row) => row.screeningSummary },
+        { header: 'Resume screening status', value: (row) => row.screeningStatus },
+        { header: 'Evidence match score (%)', value: (row) => row.screeningScore },
+        { header: 'Deterministic recommendation', value: (row) => row.screeningRecommendation },
+        { header: 'Deterministic assessment summary', value: (row) => row.screeningSummary },
       ],
       rows: reportRows,
       filename: `proofhire-${job.title}-recruitment-report`,
@@ -587,7 +587,7 @@ export default function JobHiringWorkspace({
       [
         ...createRecruitmentWorkbookSheets(data, { jobId: job.id }),
         {
-          name: 'AI Screening',
+          name: 'Deterministic Screening',
           headers: [
             'Application ID',
             'Candidate',
@@ -641,7 +641,7 @@ export default function JobHiringWorkspace({
     })
     await downloadXlsx(`proofhire-${job.title}-screening-assessments`, [
       {
-        name: 'AI Screening',
+        name: 'Deterministic Screening',
         headers: [
           'Application ID',
           'Candidate',
@@ -737,7 +737,7 @@ export default function JobHiringWorkspace({
           <div className="job-context-facts">
             <div><span>Applications</span><strong>{applications.length}</strong></div>
             <div><span>Created</span><strong>{formatDate(job.created_at)}</strong></div>
-            {job.minimum_experience !== null && (
+            {job.minimum_experience !== null && job.minimum_experience > 0 && (
               <div>
                 <span>Minimum experience</span>
                 <strong>{job.minimum_experience} years</strong>
@@ -811,7 +811,7 @@ export default function JobHiringWorkspace({
             <FileText size={18} />
             <div>
               <strong>
-                {screeningOverview.filter((item) => item.report).length} persisted AI assessment(s)
+                {screeningOverview.filter((item) => item.report).length} persisted deterministic assessment(s)
               </strong>
               <p>
                 Assessments are job-specific, evidence-based assistance and never
@@ -1037,7 +1037,7 @@ export default function JobHiringWorkspace({
                 {job.preferred_skills.length ? (
                   <p><strong>Preferred:</strong> {job.preferred_skills.join(', ')}</p>
                 ) : <p>No preferred skills have been specified.</p>}
-                <p><strong>Minimum experience:</strong> {job.minimum_experience === null ? 'Not specified' : `${job.minimum_experience} years`}</p>
+                <p><strong>Minimum experience:</strong> {job.minimum_experience === null || job.minimum_experience === 0 ? 'Not specified' : `${job.minimum_experience} years`}</p>
               </section>
               <section className="candidate-report-section">
                 <h3>Screening evidence</h3>
@@ -1160,7 +1160,7 @@ export default function JobHiringWorkspace({
               recruiter/interview outcomes. No resume URL or resume content is included.
             </p>
             <p className="form-help">
-              AI assessment: {screeningByApplication.get(candidate.id)?.report?.recommendation?.replace(/_/g, ' ') ?? 'Not available'}
+              Deterministic assessment: {screeningByApplication.get(candidate.id)?.report?.recommendation?.replace(/_/g, ' ') ?? 'Not available'}
               {screeningByApplication.get(candidate.id)?.match_score == null
                 ? ''
                 : ` · ${Math.round(screeningByApplication.get(candidate.id)?.match_score ?? 0)}% match`}

@@ -125,7 +125,7 @@ export async function getCandidates(
     const { data, error } = await client
       .from('applications')
       .select(
-        'id, workspace_id, candidate_id, job_id, status, created_at, jobs(title)',
+        'id, workspace_id, candidate_id, job_id, status, created_at, jobs!applications_job_id_fkey(title)',
       )
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })

@@ -14,13 +14,14 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rishi1930/proofhire/backend/config"
-	"github.com/rishi1930/proofhire/backend/gemini"
 	"github.com/rishi1930/proofhire/backend/resume"
+	"github.com/rishi1930/proofhire/backend/screeningengine"
 )
 
 const (
@@ -38,17 +39,10 @@ var (
 	ErrMissingResume = errors.New("application has no attached resume")
 )
 
-type Provider interface {
-	Model() string
-	AnalyzeJob(context.Context, gemini.JobInput) (gemini.Result[gemini.Criteria], error)
-	AssessCandidate(context.Context, gemini.Criteria, string) (gemini.Result[gemini.Assessment], error)
-}
-
 type Options struct {
 	SupabaseURL            string
 	SupabaseSecretKey      string
 	SupabaseServiceRoleKey string
-	Provider               Provider
 	Extractor              *resume.Extractor
 	Concurrency            int
 	PollInterval           time.Duration
@@ -60,7 +54,6 @@ type Worker struct {
 	baseURL               string
 	serviceKey            string
 	serviceCredentialType config.SupabaseCredentialType
-	provider              Provider
 	extractor             *resume.Extractor
 	concurrency           int
 	pollInterval          time.Duration
@@ -91,29 +84,28 @@ type candidate struct {
 }
 
 type job struct {
-	ID                string   `json:"id"`
-	WorkspaceID       string   `json:"workspace_id"`
-	Title             string   `json:"title"`
-	Department        string   `json:"department"`
-	Description       string   `json:"description"`
-	RequiredSkills    []string `json:"required_skills"`
-	PreferredSkills   []string `json:"preferred_skills"`
-	MinimumExperience *float64 `json:"minimum_experience"`
-	EmploymentType    string   `json:"employment_type"`
-	WorkplaceType     string   `json:"workplace_type"`
+	ID                         string                       `json:"id"`
+	WorkspaceID                string                       `json:"workspace_id"`
+	Title                      string                       `json:"title"`
+	Department                 string                       `json:"department"`
+	Description                string                       `json:"description"`
+	RequiredSkills             []string                     `json:"required_skills"`
+	PreferredSkills            []string                     `json:"preferred_skills"`
+	MinimumExperience          *float64                     `json:"minimum_experience"`
+	MinimumScreeningPercentage *float64                     `json:"minimum_screening_percentage"`
+	ScreeningWeights           screeningengine.WeightConfig `json:"screening_weights"`
+	EmploymentType             string                       `json:"employment_type"`
+	WorkplaceType              string                       `json:"workplace_type"`
 }
 
-type cachedCriteria struct {
-	ID               string          `json:"id"`
-	InputFingerprint string          `json:"input_fingerprint"`
-	Criteria         json.RawMessage `json:"criteria"`
-	Model            string          `json:"model"`
-}
-
-type assessmentEnvelope struct {
-	gemini.Assessment
-	EvidenceCoverage float64 `json:"evidence_coverage"`
-	ScoringMethod    string  `json:"scoring_method"`
+type configuredRequirement struct {
+	ID          string  `json:"id"`
+	Key         string  `json:"requirement_key"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Priority    string  `json:"priority"`
+	Category    string  `json:"category"`
+	Weight      float64 `json:"weight"`
 }
 
 type serviceError struct {
@@ -135,9 +127,6 @@ func NewWorker(options Options) (*Worker, error) {
 	)
 	if err != nil {
 		return nil, err
-	}
-	if options.Provider == nil {
-		return nil, errors.New("Gemini provider is required for the screening worker")
 	}
 	if options.Concurrency <= 0 {
 		options.Concurrency = 1
@@ -164,7 +153,6 @@ func NewWorker(options Options) (*Worker, error) {
 		baseURL:               strings.TrimRight(options.SupabaseURL, "/"),
 		serviceKey:            serviceKey,
 		serviceCredentialType: credentialType,
-		provider:              options.Provider,
 		extractor:             options.Extractor,
 		concurrency:           options.Concurrency,
 		pollInterval:          options.PollInterval,
@@ -191,14 +179,6 @@ func (worker *Worker) Run(ctx context.Context) error {
 	}
 	workers.Wait()
 	return ctx.Err()
-}
-
-func (worker *Worker) PauseForMissingGemini(ctx context.Context) error {
-	_, err := worker.rpc(ctx, "pause_application_screening_jobs", map[string]any{})
-	if err != nil {
-		return fmt.Errorf("pause screening jobs pending Gemini configuration: %w", err)
-	}
-	return nil
 }
 
 func (worker *Worker) runLoop(ctx context.Context, workerIndex int) {
@@ -309,7 +289,7 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 	}
 
 	jobBody, err := worker.selectRows(ctx, "jobs", url.Values{
-		"select":       {"id,workspace_id,title,department,description,required_skills,preferred_skills,minimum_experience,employment_type,workplace_type"},
+		"select":       {"id,workspace_id,title,department,description,required_skills,preferred_skills,minimum_experience,minimum_screening_percentage,screening_weights,employment_type,workplace_type"},
 		"id":           {"eq." + app.JobID},
 		"workspace_id": {"eq." + queueJob.WorkspaceID},
 		"limit":        {"1"},
@@ -326,23 +306,64 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 		return errors.New("screening job was not found in the application workspace")
 	}
 	currentJob := jobRows[0]
-	jobInput := gemini.JobInput{
-		Title:             currentJob.Title,
-		Department:        currentJob.Department,
-		Description:       currentJob.Description,
-		RequiredSkills:    currentJob.RequiredSkills,
-		PreferredSkills:   currentJob.PreferredSkills,
-		MinimumExperience: currentJob.MinimumExperience,
-		EmploymentType:    currentJob.EmploymentType,
-		WorkplaceType:     currentJob.WorkplaceType,
+	weights := currentJob.ScreeningWeights
+	if weights.Mandatory == 0 {
+		weights.Mandatory = 2
 	}
-	criteriaFingerprint, err := fingerprint(jobInput)
-	if err != nil {
-		return fmt.Errorf("fingerprint job criteria: %w", err)
+	if weights.Preferred == 0 {
+		weights.Preferred = 1
 	}
-	criteria, _, criteriaUsage, err := worker.getCriteria(ctx, currentJob.ID, criteriaFingerprint, jobInput)
+	if weights.Experience == 0 {
+		weights.Experience = weights.Mandatory
+	}
+	configuredRows, err := worker.selectRows(ctx, "job_screening_requirements", url.Values{
+		"select":       {"id,requirement_key,name,description,priority,category,weight"},
+		"workspace_id": {"eq." + app.WorkspaceID},
+		"job_id":       {"eq." + currentJob.ID},
+		"is_active":    {"eq.true"},
+		"order":        {"created_at.asc"},
+	})
 	if err != nil {
 		return err
+	}
+	var configured []configuredRequirement
+	if err := json.Unmarshal(configuredRows, &configured); err != nil {
+		return fmt.Errorf("decode configured screening requirements: %w", err)
+	}
+	requirements := make([]screeningengine.Requirement, 0,
+		len(currentJob.RequiredSkills)+len(currentJob.PreferredSkills)+len(configured)+1)
+	for index, skill := range currentJob.RequiredSkills {
+		skill = strings.TrimSpace(skill)
+		if skill == "" {
+			continue
+		}
+		requirements = append(requirements, screeningengine.Requirement{
+			Key: fmt.Sprintf("required-skill-%d", index+1), Name: skill,
+			Priority: "mandatory", Category: "skill", Weight: weights.Mandatory,
+		})
+	}
+	for index, skill := range currentJob.PreferredSkills {
+		skill = strings.TrimSpace(skill)
+		if skill == "" {
+			continue
+		}
+		requirements = append(requirements, screeningengine.Requirement{
+			Key: fmt.Sprintf("preferred-skill-%d", index+1), Name: skill,
+			Priority: "preferred", Category: "skill", Weight: weights.Preferred,
+		})
+	}
+	if currentJob.MinimumExperience != nil && *currentJob.MinimumExperience > 0 {
+		requirements = append(requirements, screeningengine.Requirement{
+			Key: "minimum-experience", Name: fmt.Sprintf("%g years experience", *currentJob.MinimumExperience),
+			Description: strconv.FormatFloat(*currentJob.MinimumExperience, 'f', -1, 64),
+			Priority:    "mandatory", Category: "experience", Weight: weights.Experience,
+		})
+	}
+	for _, requirement := range configured {
+		requirements = append(requirements, screeningengine.Requirement{
+			Key: requirement.Key, Name: requirement.Name, Description: requirement.Description,
+			Priority: requirement.Priority, Category: requirement.Category, Weight: requirement.Weight,
+		})
 	}
 
 	resumePath := *app.ResumePath
@@ -364,43 +385,57 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 	}
 	resumeText := redactPersonalIdentifiers(result.Text, candidateRows[0].FullName)
 
-	var report gemini.Assessment
-	var score *float64
-	var coverage float64
-	usage := criteriaUsage
-	if len(criteria.Requirements) == 0 {
-		report = gemini.Assessment{
-			Summary:           "The job criteria require recruiter clarification; no candidate score was produced.",
-			Recommendation:    "needs_more_information",
-			Confidence:        "low",
-			FollowUpQuestions: append([]string(nil), criteria.Clarifications...),
-		}
-	} else {
-		assessmentResult, assessErr := worker.provider.AssessCandidate(ctx, criteria, resumeText)
-		if assessErr != nil {
-			return assessErr
-		}
-		report = assessmentResult.Value
-		score, coverage = gemini.CalculateScore(criteria, report)
-		usage.InputTokens += assessmentResult.Usage.InputTokens
-		usage.OutputTokens += assessmentResult.Usage.OutputTokens
+	threshold := 70.0
+	if currentJob.MinimumScreeningPercentage != nil {
+		threshold = *currentJob.MinimumScreeningPercentage
 	}
-	storedReport := assessmentEnvelope{
-		Assessment:       report,
-		EvidenceCoverage: coverage,
-		ScoringMethod:    "Weighted supported evidence among assessable job requirements; essential requirements carry twice the weight of preferred requirements. Missing evidence is excluded from the score and reported separately.",
-	}
-	reportJSON, err := json.Marshal(storedReport)
+	assessment, err := screeningengine.Assess(
+		resumeText,
+		requirements,
+		weights,
+		threshold,
+		time.Now().UTC(),
+	)
 	if err != nil {
-		return fmt.Errorf("encode screening assessment: %w", err)
+		return fmt.Errorf("evaluate deterministic screening requirements: %w", err)
 	}
-	criteriaJSON, err := json.Marshal(criteria)
+	assessment.Report.ResumeFormat = result.Format
+	assessment.Report.ResumeSHA256 = result.SHA256
+	criteriaRequirements := make([]map[string]any, 0, len(requirements))
+	for _, requirement := range requirements {
+		criteriaRequirements = append(criteriaRequirements, map[string]any{
+			"key":         requirement.Key,
+			"name":        requirement.Name,
+			"description": requirement.Description,
+			"priority":    requirement.Priority,
+			"category":    requirement.Category,
+			"weight":      requirement.Weight,
+		})
+	}
+	criteriaJSON, err := json.Marshal(map[string]any{
+		"summary": "Requirements configured by the recruiter and evaluated with deterministic resume evidence matching.",
+		"experience_mandatory": currentJob.MinimumExperience != nil &&
+			*currentJob.MinimumExperience > 0,
+		"clarifications":    []string{},
+		"requirements":      criteriaRequirements,
+		"weighting":         weights,
+		"engine_version":    screeningengine.Version,
+		"minimum_threshold": threshold,
+	})
 	if err != nil {
 		return fmt.Errorf("encode screening criteria: %w", err)
 	}
+	criteriaFingerprint, err := fingerprint(json.RawMessage(criteriaJSON))
+	if err != nil {
+		return fmt.Errorf("fingerprint screening criteria: %w", err)
+	}
+	reportJSON, err := json.Marshal(assessment.Report)
+	if err != nil {
+		return fmt.Errorf("encode screening assessment: %w", err)
+	}
 	var scoreValue any
-	if score != nil {
-		scoreValue = *score
+	if assessment.Score != nil {
+		scoreValue = *assessment.Score
 	}
 	completion, err := worker.rpc(ctx, "complete_application_screening_job", map[string]any{
 		"target_job_id":               queueJob.ID,
@@ -409,9 +444,7 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 		"target_criteria":             json.RawMessage(criteriaJSON),
 		"target_report":               json.RawMessage(reportJSON),
 		"target_match_score":          scoreValue,
-		"target_model":                worker.provider.Model(),
-		"target_input_tokens":         usage.InputTokens,
-		"target_output_tokens":        usage.OutputTokens,
+		"target_model":                screeningengine.Version,
 	})
 	if err != nil {
 		return err
@@ -420,45 +453,6 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 		return ErrSuperseded
 	}
 	return nil
-}
-
-func (worker *Worker) getCriteria(
-	ctx context.Context,
-	jobID string,
-	inputFingerprint string,
-	input gemini.JobInput,
-) (gemini.Criteria, string, gemini.Usage, error) {
-	body, err := worker.selectRows(ctx, "job_screening_criteria", url.Values{
-		"select":            {"id,input_fingerprint,criteria,model"},
-		"job_id":            {"eq." + jobID},
-		"input_fingerprint": {"eq." + inputFingerprint},
-		"limit":             {"1"},
-	})
-	if err != nil {
-		return gemini.Criteria{}, "", gemini.Usage{}, err
-	}
-	var cached []cachedCriteria
-	if err := json.Unmarshal(body, &cached); err != nil {
-		return gemini.Criteria{}, "", gemini.Usage{}, fmt.Errorf("decode cached screening criteria: %w", err)
-	}
-	if len(cached) > 1 {
-		return gemini.Criteria{}, "", gemini.Usage{}, errors.New("multiple job criteria versions matched one fingerprint")
-	}
-	if len(cached) == 1 {
-		var criteria gemini.Criteria
-		if err := json.Unmarshal(cached[0].Criteria, &criteria); err != nil {
-			return gemini.Criteria{}, "", gemini.Usage{}, fmt.Errorf("decode cached job criteria: %w", err)
-		}
-		if err := gemini.ValidateCriteria(criteria); err != nil {
-			return gemini.Criteria{}, "", gemini.Usage{}, errors.New("cached job criteria failed validation")
-		}
-		return criteria, cached[0].Model, gemini.Usage{}, nil
-	}
-	result, err := worker.provider.AnalyzeJob(ctx, input)
-	if err != nil {
-		return gemini.Criteria{}, "", gemini.Usage{}, err
-	}
-	return result.Value, worker.provider.Model(), result.Usage, nil
 }
 
 func (worker *Worker) downloadResume(ctx context.Context, resumePath string) ([]byte, string, error) {
@@ -496,8 +490,7 @@ func (worker *Worker) downloadResume(ctx context.Context, resumePath string) ([]
 
 func (worker *Worker) fail(ctx context.Context, job screeningJob, cause error) error {
 	var serviceFailure *serviceError
-	retryable := gemini.IsRetryable(cause) ||
-		errors.Is(cause, resume.ErrExtractionTimeout) ||
+	retryable := errors.Is(cause, resume.ErrExtractionTimeout) ||
 		errors.Is(cause, context.DeadlineExceeded)
 	if errors.As(cause, &serviceFailure) {
 		retryable = serviceFailure.retryable
@@ -642,10 +635,6 @@ func retryableStatus(status int) bool {
 }
 
 func failureCode(err error) string {
-	var providerFailure *gemini.ProviderError
-	if errors.As(err, &providerFailure) {
-		return providerFailure.Code
-	}
 	var storageFailure *serviceError
 	if errors.As(err, &storageFailure) {
 		if storageFailure.StatusCode >= 400 {
@@ -656,10 +645,6 @@ func failureCode(err error) string {
 	switch {
 	case errors.Is(err, ErrMissingResume):
 		return "missing_resume"
-	case errors.Is(err, gemini.ErrNotConfigured):
-		return "gemini_not_configured"
-	case errors.Is(err, gemini.ErrInputTooLarge):
-		return "input_too_large"
 	case errors.Is(err, resume.ErrToolUnavailable):
 		return "document_tool_unavailable"
 	case errors.Is(err, resume.ErrExtractionTimeout), errors.Is(err, context.DeadlineExceeded):
@@ -677,10 +662,6 @@ func failureReason(err error) string {
 	switch {
 	case errors.Is(err, ErrMissingResume):
 		return "No resume is attached to this application. Upload a resume before requesting screening."
-	case errors.Is(err, gemini.ErrNotConfigured):
-		return "Gemini is not configured. Set GEMINI_API_KEY and restart the worker."
-	case errors.Is(err, gemini.ErrInputTooLarge):
-		return "Resume or job content exceeds the supported screening input limit."
 	case errors.Is(err, resume.ErrToolUnavailable):
 		return err.Error()
 	case errors.Is(err, resume.ErrExtractionTimeout):
@@ -696,10 +677,6 @@ func failureReason(err error) string {
 	case errors.Is(err, resume.ErrMIMETypeMismatch):
 		return "The stored resume extension and MIME type do not match."
 	default:
-		var providerFailure *gemini.ProviderError
-		if errors.As(err, &providerFailure) {
-			return providerFailure.Error()
-		}
 		var storageFailure *serviceError
 		if errors.As(err, &storageFailure) {
 			if storageFailure.StatusCode == http.StatusNotFound ||

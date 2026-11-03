@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowRight, BrainCircuit, FileUp, RefreshCw } from 'lucide-react'
+import { ArrowRight, FileSearch, FileUp, RefreshCw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import Button from '../components/Button'
@@ -165,6 +165,15 @@ export default function Screening() {
         return rightScore - leftScore
       })
   }, [applications, screeningOverview, selectedJobId])
+  const latestDecisionByApplication = useMemo(() => {
+    const decisions = new Map<string, ApplicationDecisionEvent>()
+    for (const decision of decisionEvents) {
+      if (!decisions.has(decision.application_id)) {
+        decisions.set(decision.application_id, decision)
+      }
+    }
+    return decisions
+  }, [decisionEvents])
   const screeningJobs = useMemo(
     () => [
       ...new Map(
@@ -236,7 +245,7 @@ export default function Screening() {
       label: 'Export Not Matched (CSV)',
       format: 'csv' as const,
       disabled: true,
-      reason: 'The model does not issue a reject/not-matched category; recruiters make all hiring decisions.',
+      reason: 'The screening engine does not make rejection decisions; recruiters make all hiring decisions.',
     },
     {
       label: 'Export Assessment Report (PDF)',
@@ -245,7 +254,7 @@ export default function Screening() {
         title: 'Job-Specific Resume Assessment Report',
         filters: [`Job: ${screeningJobs.find((job) => job.id === selectedJobId)?.title ?? 'Selected job'}`],
         summary: [
-          'AI assessments provide evidence for recruiter review and do not make hiring decisions.',
+          'Deterministic resume matching provides evidence for recruiter review and does not make hiring decisions.',
           'Missing resume evidence is not proof that a candidate lacks a skill.',
         ],
         columns: assessmentExportColumns,
@@ -380,14 +389,15 @@ export default function Screening() {
       </div>
 
       <div className="info-banner">
-        <BrainCircuit size={19} />
+        <FileSearch size={19} />
         <div>
           <strong>Evidence-based assistance, recruiter decides</strong>
           <p>
             Automated assessments are tied to the selected job and must be
             reviewed alongside the resume. Missing evidence is not proof that a
-            candidate lacks a skill; AI recommendations never reject or
-            shortlist anyone automatically.
+            candidate lacks a skill. No screening score rejects or shortlists
+            anyone automatically; recruiters can record an audited decision
+            from the review queue.
           </p>
         </div>
       </div>
@@ -405,7 +415,7 @@ export default function Screening() {
       {screeningError && (
         <div className="form-alert form-alert-error" role="alert">
           Screening data or processing is unavailable: {screeningError}
-          {' '}Confirm migration 202610290001 is applied locally and the screening worker is configured.
+          {' '}Confirm the reviewed deterministic-screening migration is applied in Supabase and the backend worker is running.
         </div>
       )}
 
@@ -448,7 +458,8 @@ export default function Screening() {
             <p>
               {screeningApplicationRows.length} applications
               {selectedJobId ? ' for the selected job' : ' in this workspace'}.
-              Rankings are based only on evidence the system could assess.
+              Deterministic scores use job-configured weights. Missing evidence
+              stays unverified and is never an automatic rejection.
             </p>
           </div>
           <Button
@@ -468,12 +479,12 @@ export default function Screening() {
         ) : screeningError ? (
           <div className="empty-state">
             <h3>Assessment data unavailable</h3>
-            <p>Apply the screening migration locally, then refresh this page.</p>
+            <p>Confirm the reviewed deterministic-screening migration is applied in Supabase, then refresh this page.</p>
           </div>
         ) : screeningApplicationRows.length === 0 ? (
           <div className="empty-state">
             <h3>No applications to assess</h3>
-            <p>Applications with resumes will be queued when the screening migration is enabled.</p>
+            <p>Applications with resumes are screened after the approved Supabase migrations are applied and the backend worker is running.</p>
           </div>
         ) : (
           <div className="screening-assessment-list">
@@ -487,6 +498,7 @@ export default function Screening() {
                 status === 'not_queued' || status === 'failed' || status === 'superseded'
               )
               const report = overview?.report
+              const latestDecision = latestDecisionByApplication.get(application.id)
               const requirements = new Map(
                 (overview?.criteria?.requirements ?? []).map((requirement) => [
                   requirement.key,
@@ -519,7 +531,43 @@ export default function Screening() {
                         <span>Confidence: {report.confidence}</span>
                         <span>Evidence coverage: {Math.round(report.evidence_coverage)}%</span>
                         <span>Assessed: {overview?.assessed_at ? new Date(overview.assessed_at).toLocaleString() : '—'}</span>
+                        {report.threshold_met !== undefined && (
+                          <span>
+                            Threshold: {report.threshold_met ? 'met' : 'not met'}
+                            {report.minimum_threshold !== undefined &&
+                              ` (${report.minimum_threshold}%)`}
+                          </span>
+                        )}
+                        {report.resume_format && (
+                          <span>Resume format: {report.resume_format.toUpperCase()}</span>
+                        )}
                       </div>
+                      {latestDecision && (
+                        <p className="screening-decision-override">
+                          Latest recruiter decision: {latestDecision.decision.replace(/_/g, ' ')}
+                          {latestDecision.note ? ` — ${latestDecision.note}` : ''}
+                          {' · '}{new Date(latestDecision.created_at).toLocaleString()}
+                        </p>
+                      )}
+                      {report.matched_requirements && report.matched_requirements.length > 0 && (
+                        <>
+                          <strong>Matched requirements</strong>
+                          <ul>{report.matched_requirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                        </>
+                      )}
+                      {report.partially_matched_requirements &&
+                        report.partially_matched_requirements.length > 0 && (
+                          <>
+                            <strong>Partially matched requirements</strong>
+                            <ul>{report.partially_matched_requirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                          </>
+                        )}
+                      {report.unmatched_requirements && report.unmatched_requirements.length > 0 && (
+                        <>
+                          <strong>Unmatched or unverified requirements</strong>
+                          <ul>{report.unmatched_requirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                        </>
+                      )}
                       {report.strengths.length > 0 && (
                         <>
                           <strong>Evidence-backed strengths</strong>
@@ -542,14 +590,32 @@ export default function Screening() {
                               Professional experience treated as mandatory:{' '}
                               {overview.criteria.experience_mandatory ? 'Yes' : 'No'}.
                             </p>
-                            {overview.criteria.clarifications.length > 0 && (
+                            {(overview.criteria.clarifications ?? []).length > 0 && (
                               <>
                                 <strong>Job criteria to clarify</strong>
-                                <ul>{overview.criteria.clarifications.map((item) => <li key={item}>{item}</li>)}</ul>
+                                <ul>{overview.criteria.clarifications?.map((item) => <li key={item}>{item}</li>)}</ul>
                               </>
                             )}
                           </>
                         )}
+                        {report.category_scores && report.category_scores.length > 0 && (
+                          <>
+                            <strong>Category scores</strong>
+                            <ul>
+                              {report.category_scores.map((category) => (
+                                <li key={category.category}>
+                                  {category.category.replace(/_/g, ' ')}: {category.score}% (
+                                  {category.earned_weight}/{category.available_weight} weighted points)
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
+                        <p>
+                          Screening engine: {report.engine_version ?? 'legacy result'} ·
+                          parsing: {report.parsing_status ?? 'unknown'} ·
+                          minimum: {report.minimum_threshold ?? 'not recorded'}%
+                        </p>
                         {report.findings.length === 0 ? (
                           <p>No score was produced because job requirements need recruiter clarification.</p>
                         ) : (
@@ -618,7 +684,7 @@ export default function Screening() {
                     </div>
                   )}
                   {!report && status === 'waiting_configuration' && (
-                    <p>Assessment is waiting for server-side Gemini configuration.</p>
+                    <p>Assessment is waiting for the screening worker to process this resume.</p>
                   )}
                   {!report && ['pending', 'retry_wait', 'processing'].includes(status) && (
                     <p>Resume assessment is {status.replace(/_/g, ' ')}. This page will refresh its status automatically.</p>
@@ -651,7 +717,7 @@ export default function Screening() {
           <div className="empty-state">
             <p>
               Decision history could not be loaded: {decisionHistoryError}
-              {' '}Apply migration 202610260006 if it has not been run.
+              {' '}Confirm migration 202610260006 has been applied in the intended Supabase project.
             </p>
           </div>
         ) : decisionEvents.length === 0 ? (

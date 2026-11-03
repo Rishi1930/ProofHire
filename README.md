@@ -20,14 +20,21 @@ Supabase key; workspace access remains enforced by database Row Level Security.
 - Workspace-scoped CSV, PDF, and XLSX exports. Exports do not contain private
   resume paths or signed URLs.
 
-The repository now includes code for a persistent, application-specific resume
-screening pipeline: a Supabase migration and RLS policies, a lease-based
-database queue, a separate Go worker, bounded document extraction, structured
-Gemini requests, server-side score calculation, and recruiter assessment
-review. This code has not been verified against a live Supabase project or
-Gemini account; the migration must be reviewed and applied to a local/test
-database before use. Gemini screening is not available until the worker is
-configured and running.
+Resume screening uses a deterministic Go engine, not an AI API. It supports
+PDF/DOC/DOCX extraction, configurable mandatory/preferred requirements,
+weighted category scoring, literal-match evidence, persisted versioned
+reports, and a per-job screening threshold. The worker uses the existing
+lease-based Supabase screening queue and existing
+`job_screening_criteria`/`application_screening_assessments` tables. The
+additive deterministic-screening migration adds workspace-scoped supplemental
+requirements and job scoring settings, and includes the settings in queue
+fingerprints so requirement changes enqueue a fresh assessment. The owner
+provided a read-only schema inventory that confirmed the existing job key,
+screening tables, authorization functions, and absence of the new settings
+table/columns. The migration has not been applied or live-tested; configured
+Supabase REST requests still return HTTP 401.
+Screening scores are review signals and do not automatically reject candidates
+or advance application stages.
 
 The aptitude workflow includes test authoring and publishing, manually
 delivered invitations, candidate sessions, autosaved answers, server-side
@@ -37,13 +44,15 @@ Recruiters can schedule interviews and record outcomes and feedback.
 
 The new database migrations add application-stage history, richer interview
 records, coding-assessment configuration and private submission/evaluation
-queues, email-delivery tracking, and an application-stage summary view. Coding
-execution and email-provider delivery are **not implemented**: coding
-submissions remain unevaluated until a trusted runner is added, and recorded
-emails are marked for manual delivery rather than claimed as sent. Candidate
-interview recording, transcription, and AI interview evaluations are also
-outside the current system. Recruiter decisions remain human decisions, not AI
-assessments.
+queues, email-delivery tracking, and an application-stage summary view. The Go
+backend now includes a Resend HTTP client and responsive, escaped HTML plus
+plain-text aptitude/interview invitation templates. They are **not yet wired
+to a transactional outbox worker or invitation workflow**; recorded emails
+remain manual-delivery records and no email is automatically sent. Coding
+submissions remain unevaluated until a trusted runner is added. Candidate
+interview invitation links, expiry/revocation management, the interview
+placeholder route, and automatic aptitude-to-interview progression are not
+implemented. Recruiter decisions remain human decisions.
 
 ## Requirements
 
@@ -94,14 +103,11 @@ processes do not load dotenv files automatically. Configure `SUPABASE_SECRET_KEY
 with the new `sb_secret_` key format; the optional
 `SUPABASE_SERVICE_ROLE_KEY` accepts a legacy service-role JWT and is used only
 when `SUPABASE_SECRET_KEY` is unset. The new key takes precedence when both are
-configured. Keep both Supabase privileged credentials and `GEMINI_API_KEY` in
-server/worker secrets only; never put them in `.env.local`, frontend code, or a
-`VITE_` variable. The worker sends a new secret key only in the `apikey` header;
+configured. Keep Supabase privileged credentials in server/worker secrets only;
+never put them in `.env.local`, frontend code, or a `VITE_` variable. The worker
+sends a new secret key only in the `apikey` header;
 it uses the legacy JWT in both `apikey` and `Authorization: Bearer` headers.
-The worker checks the configured model's metadata and `generateContent`
-support before processing. Missing credentials or an unavailable model pause
-queued assessments for configuration instead of reporting successful screens.
-The public backend can start without Gemini credentials.
+Resume screening has no external AI or model credentials.
 
 ```powershell
 $env:SUPABASE_URL = "https://your-project.supabase.co"
@@ -109,8 +115,6 @@ $env:SUPABASE_ANON_KEY = "your-supabase-anon-or-publishable-key"
 $env:SUPABASE_SECRET_KEY = "sb_secret_your-project-secret-key"
 # Optional legacy fallback:
 # $env:SUPABASE_SERVICE_ROLE_KEY = "your-legacy-service-role-jwt"
-$env:GEMINI_API_KEY = "configure-this-in-your-local-shell"
-$env:GEMINI_MODEL = "gemini-3.8-flash"
 go test ./...
 ```
 
@@ -165,6 +169,36 @@ run the Go server alongside `npm run dev`. Configure the server-only
 `SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) for aptitude
 endpoints and the worker.
 
+### Resend setup (owner action)
+
+Email templates and a provider client are implemented, but automatic delivery,
+outbox processing, provider webhooks, and delivery-status reconciliation are
+not yet connected. Do not configure production sends based on this scaffold.
+When the delivery workflow is completed, the project owner must:
+
+1. Create an account at [Resend](https://resend.com/) and generate an API key
+   with email-send access.
+2. Add and verify a sending domain under **Domains**. Publish the exact SPF and
+   DKIM DNS records Resend displays; configure DMARC for the domain's policy.
+3. Configure `EMAIL_FROM_ADDRESS` using the verified domain and set
+   `EMAIL_FROM_NAME=ProofHire`.
+4. Store `EMAIL_API_KEY`, sender settings, and `APP_BASE_URL` only in the
+   backend/worker secret environment (never in Vite variables or Git). Copy
+   `.env.backend.example` and fill the values in the deployment's secret
+   manager; do not paste credentials into chat.
+5. In Resend **Webhooks**, register the deployed API webhook URL and select
+   delivery, bounce, and complaint events. Webhook signature verification is
+   not implemented yet, so do not enable this workflow until it is.
+6. After the outbox and webhook code is deployed, send a controlled message to
+   an address you control and verify provider acceptance, delivery, and bounce
+   events in both Resend and the recruiter dashboard.
+
+Resend may allow testing from its onboarding/sandbox sender before a domain is
+verified, with restrictions on permitted recipients and sender identity.
+Consult the current Resend dashboard and documentation for the account-specific
+limits; this repository has not tested an actual Resend account or delivered
+email.
+
 ## Supabase configuration
 
 Required frontend environment variables:
@@ -176,7 +210,7 @@ Required frontend environment variables:
 | `VITE_SUPABASE_ANON_KEY` | Legacy anon key; used if the publishable-key variable is unset |
 
 Only the anon/publishable key belongs in browser configuration. **Never put a
-Supabase secret/service-role key, Gemini API key, or other server secret in a
+Supabase secret/service-role key or other server secret in a
 `VITE_` variable.** The API server uses the anon/publishable key to verify
 sessions and a server-only privileged credential for aptitude session RPCs.
 The isolated screening worker uses that same privileged credential and must be
@@ -186,26 +220,27 @@ bundle.
 Database migrations are in `supabase/migrations/`; read
 [`supabase/database-architecture.md`](supabase/database-architecture.md) for the
 repository audit, schema relationships, RLS rules, and safe test setup. The
-new screening, aptitude, resume-version, recruitment-foundation, coding, and
-email migrations are additive and have **not** been applied to any database.
+screening, aptitude, resume-version, recruitment-foundation, coding, email, and
+deterministic-screening-configuration migrations are additive and have **not**
+been verified as applied to any database.
 Verify the target is a disposable local/test database before applying them;
 never run a local reset or migration command against production. The resume
 bucket must remain private. Do not grant anonymous users direct
 candidate/application/assessment table permissions.
 
-The Gemini integration follows the official `generateContent` structured JSON
-response format and currently defaults to the stable `gemini-3.8-flash` model;
-the worker verifies that the configured account can access the model before
-processing work. Override `GEMINI_MODEL` when required by the configured
-account. Calls are
-server-only, bounded, and retried only for transient transport, rate-limit, and
-provider errors. The model supplies evidence findings, but score calculation,
-requirement validation, and exact excerpt checks run in Go. Missing evidence is
-excluded from the score denominator and shown separately. No live Gemini
-request, real Supabase RLS check, production load test, or external utility
-integration was run here. Existing application records without a stored resume
-cannot be reconstructed from their candidate record; recruiters must attach
-the original document to that application before screening.
+The screening engine performs exact phrase and structured experience matching
+locally. Scores include unmatched requirements in the denominator; partial
+matches receive half weight. Absence of a resume phrase is recorded as missing
+evidence, not proof the candidate lacks a qualification. Explicitly stated
+absence can be marked not met only where the resume says so directly. No live
+Supabase RLS check or full database integration test was possible because the
+configured Supabase API returned HTTP 401. Recruiter job settings and
+requirements must be saved after the reviewed migration is applied; changing
+them queues screening again. Existing application records without a stored
+resume cannot be reconstructed from their candidate record; recruiters must
+attach the original document to that application before screening. Screening
+results are advisory: authorized recruiters make and audit application-stage
+decisions separately.
 
 ## GitHub checks
 

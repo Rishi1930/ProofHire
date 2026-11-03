@@ -47,3 +47,14 @@
 .screening-resume-upload-label input:disabled {
   cursor: not-allowed;
 }
+
+.screening-decision-override {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid #6f62e8;
+  border-radius: 0 7px 7px 0;
+  background: #f5f4ff;
+  color: #48416f;
+  font-size: 11px;
+  line-height: 1.5;
+}

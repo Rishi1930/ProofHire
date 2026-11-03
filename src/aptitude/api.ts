@@ -28,6 +28,11 @@ export type CandidateAptitudeSession = {
   active_attempt_started_at: string | null
   saved_answers: Record<string, unknown>
   questions: AptitudeQuestion[]
+  current_question_index?: number
+  current_question_updated_at?: string | null
+  server_now?: string
+  deadline_at?: string | null
+  saved_answer_timestamps?: Record<string, string>
   attempt_id?: string
   attempt_number?: number
   started_at?: string
@@ -58,7 +63,9 @@ async function request<T>(
 ): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`/api/v1/aptitude/${path}`, {
+    response = await fetch(
+      path.startsWith('/') ? path : `/api/v1/aptitude/${path}`,
+      {
       method,
       headers: {
         'Content-Type': 'application/json',
@@ -67,7 +74,8 @@ async function request<T>(
       body: JSON.stringify(body),
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-    })
+      },
+    )
   } catch {
     throw new Error('The aptitude service could not be reached.')
   }
@@ -85,6 +93,12 @@ async function request<T>(
         'This invitation is invalid, expired, or no longer available.',
       answer_save_failed:
         'Your answer could not be saved. Check your connection and try again.',
+      progress_save_failed:
+        'Your progress could not be synced. It is saved on this device and will retry when your connection returns.',
+      email_delivery_unavailable:
+        'Email delivery controls are not configured on the server.',
+      email_delivery_action_failed:
+        'The email could not be sent or retried. Refresh the delivery status and try again.',
       monitoring_event_failed:
         'Assessment monitoring could not be recorded. Contact the recruiter before continuing.',
     }
@@ -115,7 +129,7 @@ export function createAptitudeInvitation(
       email_status: string
     }
     token: string
-    delivery: 'manual'
+    delivery: 'queued'
   }>('invitations', 'POST', body, accessToken)
 }
 
@@ -149,6 +163,22 @@ export function saveCandidateAnswer(
   })
 }
 
+export function saveCandidateProgress(
+  token: string,
+  attemptId: string,
+  questionId: string,
+  questionIndex: number,
+  answer?: unknown,
+) {
+  return request<{ saved: boolean }>('candidate/progress', 'POST', {
+    token,
+    attempt_id: attemptId,
+    question_id: questionId,
+    question_index: questionIndex,
+    ...(answer === undefined ? {} : { answer }),
+  })
+}
+
 export function submitCandidateAttempt(token: string, attemptId: string) {
   return request<AptitudeSubmission>('candidate/submit', 'POST', {
     token,
@@ -167,4 +197,17 @@ export function recordCandidateEvent(
     event_type: eventType,
     event_data: {},
   })
+}
+
+export function requestEmailDeliveryAction(
+  jobId: string,
+  body: { workspace_id: string; action: 'send' | 'retry' | 'resend'; request_id: string },
+  accessToken: string,
+) {
+  return request<{ id: string; status: string }>(
+    `/api/v1/email-delivery/${jobId}/action`,
+    'POST',
+    body,
+    accessToken,
+  )
 }

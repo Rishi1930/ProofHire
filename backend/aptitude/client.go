@@ -113,11 +113,12 @@ func (client *Client) CreateInvitation(
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
 	hash := sha256.Sum256([]byte(token))
 	var invitation Invitation
-	err := client.call(ctx, "create_aptitude_invitation", map[string]any{
+	err := client.call(ctx, "create_automated_aptitude_invitation", map[string]any{
 		"target_user_id":         input.UserID,
 		"target_workspace_id":    input.WorkspaceID,
 		"target_application_id":  input.ApplicationID,
 		"target_test_version_id": input.VersionID,
+		"target_token":           token,
 		"target_token_hash":      hex.EncodeToString(hash[:]),
 		"target_expires_at":      input.ExpiresAt.UTC().Format(time.RFC3339),
 		"target_max_attempts":    input.MaxAttempts,
@@ -179,6 +180,39 @@ func (client *Client) SaveAnswer(
 	}
 	if !response {
 		return errors.New("aptitude answer was not saved")
+	}
+	return nil
+}
+
+func (client *Client) SaveProgress(
+	ctx context.Context,
+	token string,
+	attemptID string,
+	questionID string,
+	questionIndex int,
+	answer json.RawMessage,
+) error {
+	if !validToken(token) || !uuidPattern.MatchString(attemptID) ||
+		!uuidPattern.MatchString(questionID) || questionIndex < 0 || questionIndex > 1000 ||
+		len(answer) > 10<<10 || (len(answer) > 0 && !json.Valid(answer)) {
+		return errors.New("invalid aptitude progress")
+	}
+	var answerValue any
+	if len(answer) > 0 {
+		answerValue = answer
+	}
+	var response bool
+	if err := client.call(ctx, "save_aptitude_candidate_progress", map[string]any{
+		"target_token_hash":     tokenHash(token),
+		"target_attempt_id":     attemptID,
+		"target_question_id":    questionID,
+		"target_question_index": questionIndex,
+		"target_answer":         answerValue,
+	}, &response); err != nil {
+		return err
+	}
+	if !response {
+		return errors.New("aptitude progress was not saved")
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rishi1930/proofhire/backend/aptitude"
+	"github.com/rishi1930/proofhire/backend/email"
 	"github.com/rishi1930/proofhire/backend/supabaseauth"
 )
 
@@ -34,6 +35,14 @@ type candidateAnswerRequest struct {
 	Answer     json.RawMessage `json:"answer"`
 }
 
+type candidateProgressRequest struct {
+	Token         string          `json:"token"`
+	AttemptID     string          `json:"attempt_id"`
+	QuestionID    string          `json:"question_id"`
+	QuestionIndex int             `json:"question_index"`
+	Answer        json.RawMessage `json:"answer"`
+}
+
 type candidateSubmitRequest struct {
 	Token     string `json:"token"`
 	AttemptID string `json:"attempt_id"`
@@ -44,6 +53,12 @@ type candidateEventRequest struct {
 	AttemptID string          `json:"attempt_id"`
 	EventType string          `json:"event_type"`
 	EventData json.RawMessage `json:"event_data"`
+}
+
+type emailDeliveryActionRequest struct {
+	WorkspaceID string `json:"workspace_id"`
+	Action      string `json:"action"`
+	RequestID   string `json:"request_id"`
 }
 
 func (handler *apiHandler) createAptitudeInvitation(
@@ -116,7 +131,7 @@ func (handler *apiHandler) createAptitudeInvitation(
 	writeJSON(writer, http.StatusCreated, map[string]any{
 		"invitation": invitation,
 		"token":      rawToken,
-		"delivery":   "manual",
+		"delivery":   "queued",
 	})
 }
 
@@ -189,6 +204,35 @@ func (handler *apiHandler) saveAptitudeCandidateAnswer(
 	writeJSON(writer, http.StatusOK, map[string]bool{"saved": true})
 }
 
+func (handler *apiHandler) saveAptitudeCandidateProgress(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	if handler.aptitude == nil {
+		writeError(writer, http.StatusServiceUnavailable, "aptitude_service_unavailable")
+		return
+	}
+	var input candidateProgressRequest
+	if !decodeJSONBody(writer, request, &input, 16<<10) ||
+		len(input.Token) != 43 || input.QuestionIndex < 0 {
+		writeError(writer, http.StatusBadRequest, "invalid_progress")
+		return
+	}
+	if err := handler.aptitude.SaveProgress(
+		request.Context(),
+		input.Token,
+		input.AttemptID,
+		input.QuestionID,
+		input.QuestionIndex,
+		input.Answer,
+	); err != nil {
+		handler.logAptitudeFailure(request, "aptitude progress could not be saved")
+		writeError(writer, http.StatusBadGateway, "progress_save_failed")
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]bool{"saved": true})
+}
+
 func (handler *apiHandler) submitAptitudeCandidateAttempt(
 	writer http.ResponseWriter,
 	request *http.Request,
@@ -239,6 +283,118 @@ func (handler *apiHandler) recordAptitudeCandidateEvent(
 		return
 	}
 	writeJSON(writer, http.StatusAccepted, map[string]bool{"recorded": true})
+}
+
+func (handler *apiHandler) requestEmailDeliveryAction(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	if handler.emailQueue == nil {
+		writeError(writer, http.StatusServiceUnavailable, "email_delivery_unavailable")
+		return
+	}
+	user, accessToken, ok := handler.authenticatedUser(writer, request)
+	if !ok {
+		return
+	}
+	var input emailDeliveryActionRequest
+	if !decodeJSONBody(writer, request, &input, 8<<10) ||
+		!aptitudeUUID.MatchString(input.WorkspaceID) ||
+		!aptitudeUUID.MatchString(request.PathValue("jobID")) ||
+		!aptitudeUUID.MatchString(input.RequestID) ||
+		(input.Action != "send" && input.Action != "retry" && input.Action != "resend") {
+		writeError(writer, http.StatusBadRequest, "invalid_email_delivery_action")
+		return
+	}
+	role, err := handler.verifier.GetWorkspaceRole(
+		request.Context(),
+		accessToken,
+		user.ID,
+		input.WorkspaceID,
+	)
+	if errors.Is(err, supabaseauth.ErrUnauthenticated) {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if errors.Is(err, supabaseauth.ErrForbidden) ||
+		(err == nil && role != "owner" && role != "admin" && role != "recruiter") {
+		writeError(writer, http.StatusForbidden, "workspace_access_denied")
+		return
+	}
+	if err != nil {
+		handler.logger.Error(
+			"Supabase workspace authorization check failed",
+			"request_id",
+			requestIDFromContext(request.Context()),
+		)
+		writeError(writer, http.StatusBadGateway, "authorization_unavailable")
+		return
+	}
+	result, err := handler.emailQueue.RequestAction(
+		request.Context(),
+		user.ID,
+		input.WorkspaceID,
+		request.PathValue("jobID"),
+		input.Action,
+		input.RequestID,
+	)
+	if err != nil {
+		handler.logger.Error(
+			"email delivery action failed",
+			"request_id",
+			requestIDFromContext(request.Context()),
+		)
+		writeError(writer, http.StatusBadGateway, "email_delivery_action_failed")
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (handler *apiHandler) resendWebhook(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	if handler.emailQueue == nil || handler.resendWebhookSecret == "" {
+		writeError(writer, http.StatusServiceUnavailable, "email_webhook_unavailable")
+		return
+	}
+	if request.ContentLength > 1<<20 {
+		writeError(writer, http.StatusRequestEntityTooLarge, "invalid_provider_webhook")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, (1<<20)+1))
+	if err != nil || len(body) > 1<<20 {
+		writeError(writer, http.StatusBadRequest, "invalid_provider_webhook")
+		return
+	}
+	event, err := email.VerifyResendWebhook(
+		handler.resendWebhookSecret,
+		request.Header,
+		body,
+		time.Now(),
+	)
+	if err != nil {
+		writeError(writer, http.StatusUnauthorized, "invalid_provider_webhook")
+		return
+	}
+	if event.Message == "" {
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := handler.emailQueue.RecordProviderEvent(
+		request.Context(),
+		event.Message,
+		event.Type,
+	); err != nil {
+		handler.logger.Error(
+			"Resend delivery event could not be recorded",
+			"request_id",
+			requestIDFromContext(request.Context()),
+		)
+		writeError(writer, http.StatusBadGateway, "provider_webhook_record_failed")
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 func (handler *apiHandler) candidateRequest(

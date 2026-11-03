@@ -580,8 +580,8 @@ export default function Settings() {
           <section className="dashboard-panel settings-panel">
             <div className="dashboard-panel-header">
               <div>
-                <h2>AI screening</h2>
-                <p>Planned tools for consistent, evidence-based hiring.</p>
+                <h2>Resume screening</h2>
+                <p>Deterministic, evidence-based matching configured per job.</p>
               </div>
               <BrainCircuit size={19} className="settings-heading-icon" />
             </div>
@@ -591,7 +591,7 @@ export default function Settings() {
                   <Sparkles size={17} />
                 </span>
                 <div>
-                  <strong>AI resume shortlisting</strong>
+                  <strong>Weighted resume requirements</strong>
                   <p>
                     Configure resume criteria, weighting, and shortlist
                     recommendations.
@@ -614,8 +614,9 @@ export default function Settings() {
               </article>
             </div>
             <p className="settings-feature-note">
-              These controls are a preview only. No automated screening or
-              candidate scoring is active yet.
+              Job-specific screening thresholds and requirement weights are
+              configured from Jobs. A missing resume detail remains unknown;
+              screening results are for recruiter review, not automatic rejection.
             </p>
           </section>
 

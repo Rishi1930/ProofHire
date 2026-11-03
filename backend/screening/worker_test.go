@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rishi1930/proofhire/backend/gemini"
 	"github.com/rishi1930/proofhire/backend/resume"
+	"github.com/rishi1930/proofhire/backend/screeningengine"
 )
 
 const (
@@ -27,43 +27,8 @@ const (
 	testLeaseToken    = "abcdefab-cdef-abcd-efab-cdefabcdefab"
 )
 
-type fakeProvider struct {
-	criteria   gemini.Criteria
-	assessment gemini.Assessment
-}
-
-func (provider fakeProvider) Model() string {
-	return "gemini-test"
-}
-
-func (provider fakeProvider) AnalyzeJob(context.Context, gemini.JobInput) (gemini.Result[gemini.Criteria], error) {
-	return gemini.Result[gemini.Criteria]{
-		Value: provider.criteria,
-		Usage: gemini.Usage{InputTokens: 10, OutputTokens: 5},
-	}, nil
-}
-
-func (provider fakeProvider) AssessCandidate(
-	_ context.Context,
-	_ gemini.Criteria,
-	resumeText string,
-) (gemini.Result[gemini.Assessment], error) {
-	if !strings.Contains(resumeText, "Go service") {
-		return gemini.Result[gemini.Assessment]{}, errors.New("resume text was not extracted")
-	}
-	if strings.Contains(resumeText, "Rishi Candidate") ||
-		strings.Contains(resumeText, "rishi@example.test") ||
-		strings.Contains(resumeText, "9876543210") {
-		return gemini.Result[gemini.Assessment]{}, errors.New("personal identifiers were not redacted")
-	}
-	return gemini.Result[gemini.Assessment]{
-		Value: provider.assessment,
-		Usage: gemini.Usage{InputTokens: 20, OutputTokens: 8},
-	}, nil
-}
-
 func TestProcessPersistsJobSpecificAssessment(t *testing.T) {
-	resumeFile := makeTestDOCX(t, `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Rishi Candidate rishi@example.test 9876543210 Built a Go service</w:t></w:r></w:p></w:body></w:document>`)
+	resumeFile := makeTestDOCX(t, `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Rishi Candidate rishi@example.test 9876543210 Skills: Go. Certifications: AWS Certified Cloud Practitioner.</w:t></w:r></w:p></w:body></w:document>`)
 	serviceRoleKey := legacyServiceRoleTestKey()
 	var completed map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -87,14 +52,19 @@ func TestProcessPersistsJobSpecificAssessment(t *testing.T) {
 			}})
 		case request.Method == http.MethodGet && request.URL.Path == "/rest/v1/jobs":
 			writeRows(writer, []job{{
-				ID:             testJobID,
-				WorkspaceID:    testWorkspaceID,
-				Title:          "Software Engineer",
-				Description:    "Build backend services using Go.",
-				RequiredSkills: []string{"Go"},
+				ID:                         testJobID,
+				WorkspaceID:                testWorkspaceID,
+				Title:                      "Software Engineer",
+				Description:                "Build backend services using Go.",
+				RequiredSkills:             []string{"Go"},
+				MinimumScreeningPercentage: ptrFloat(100),
+				MinimumExperience:          ptrFloat(0),
 			}})
-		case request.Method == http.MethodGet && request.URL.Path == "/rest/v1/job_screening_criteria":
-			writeRows(writer, []cachedCriteria{})
+		case request.Method == http.MethodGet && request.URL.Path == "/rest/v1/job_screening_requirements":
+			writeRows(writer, []configuredRequirement{{
+				Key: "aws-certification", Name: "AWS Certified Cloud Practitioner",
+				Priority: "preferred", Category: "certification", Weight: 1,
+			}})
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/storage/v1/object/candidate-resumes/"):
 			writer.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 			_, _ = writer.Write(resumeFile)
@@ -110,32 +80,9 @@ func TestProcessPersistsJobSpecificAssessment(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := fakeProvider{
-		criteria: gemini.Criteria{
-			Summary: "Go backend role",
-			Requirements: []gemini.Requirement{{
-				Key: "go", Name: "Go", Description: "Build Go services",
-				Priority: "essential", Category: "skill",
-			}},
-		},
-		assessment: gemini.Assessment{
-			Summary:        "Resume evidence supports the Go requirement.",
-			Recommendation: "review",
-			Confidence:     "high",
-			Strengths:      []string{"Built a Go service"},
-			Findings: []gemini.Finding{{
-				RequirementKey: "go",
-				Status:         "supported",
-				Explanation:    "The project demonstrates the required skill.",
-				Evidence:       []gemini.Evidence{{Excerpt: "Built a Go service", Source: "Projects"}},
-				Confidence:     "high",
-			}},
-		},
-	}
 	worker, err := NewWorker(Options{
 		SupabaseURL:            server.URL,
 		SupabaseServiceRoleKey: serviceRoleKey,
-		Provider:               provider,
 		Extractor:              resume.NewExtractor(resume.Options{}),
 		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -155,10 +102,10 @@ func TestProcessPersistsJobSpecificAssessment(t *testing.T) {
 	if completed["target_match_score"] != float64(100) {
 		t.Fatalf("score = %v, want 100", completed["target_match_score"])
 	}
-	if completed["target_input_tokens"] != float64(30) || completed["target_output_tokens"] != float64(13) {
-		t.Fatalf("usage was not accumulated: %v %v", completed["target_input_tokens"], completed["target_output_tokens"])
+	if completed["target_model"] != screeningengine.Version {
+		t.Fatalf("screening engine version = %v", completed["target_model"])
 	}
-	var report assessmentEnvelope
+	var report screeningengine.Report
 	reportJSON, err := json.Marshal(completed["target_report"])
 	if err != nil {
 		t.Fatalf("Marshal() report: %v", err)
@@ -166,12 +113,19 @@ func TestProcessPersistsJobSpecificAssessment(t *testing.T) {
 	if err := json.Unmarshal(reportJSON, &report); err != nil {
 		t.Fatalf("Unmarshal() report: %v", err)
 	}
-	if report.Summary != "Resume evidence supports the Go requirement." || report.EvidenceCoverage != 100 {
+	if report.Recommendation != "strong_match" || report.EvidenceCoverage != 100 ||
+		report.Findings[0].Status != "supported" ||
+		strings.Contains(report.Findings[0].Evidence[0].Excerpt, "rishi@example.test") ||
+		report.ResumeFormat != "docx" || len(report.ResumeSHA256) != 64 {
 		t.Fatalf("unexpected assessment report: %+v", report)
+	}
+	if report.Findings[1].Status != "supported" ||
+		report.Findings[1].Evidence[0].Source != "Certifications" {
+		t.Fatalf("additional recruiter requirement was not assessed: %+v", report.Findings[1])
 	}
 }
 
-func TestProcessMissingResumeStopsBeforeStorageOrGemini(t *testing.T) {
+func TestProcessMissingResumeStopsBeforeStorageOrScreening(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests++
@@ -192,7 +146,6 @@ func TestProcessMissingResumeStopsBeforeStorageOrGemini(t *testing.T) {
 	worker, err := NewWorker(Options{
 		SupabaseURL:            server.URL,
 		SupabaseServiceRoleKey: legacyServiceRoleTestKey(),
-		Provider:               fakeProvider{},
 	})
 	if err != nil {
 		t.Fatalf("NewWorker() error = %v", err)
@@ -207,7 +160,7 @@ func TestProcessMissingResumeStopsBeforeStorageOrGemini(t *testing.T) {
 		t.Fatalf("process() error = %v, want ErrMissingResume", err)
 	}
 	if requests != 1 {
-		t.Fatalf("request count = %d, want no storage or Gemini requests", requests)
+		t.Fatalf("request count = %d, want no storage request", requests)
 	}
 	if got := failureReason(err); got != "No resume is attached to this application. Upload a resume before requesting screening." {
 		t.Fatalf("failureReason() = %q", got)
@@ -265,7 +218,6 @@ func TestWorkerCredentialHeadersForRESTAndStorage(t *testing.T) {
 				SupabaseURL:            server.URL,
 				SupabaseSecretKey:      test.secretKey,
 				SupabaseServiceRoleKey: test.serviceKey,
-				Provider:               fakeProvider{},
 			})
 			if err != nil {
 				t.Fatalf("NewWorker() error = %v", err)
@@ -294,7 +246,6 @@ func TestWorkerErrorsDoNotExposeSupabaseCredentials(t *testing.T) {
 	worker, err := NewWorker(Options{
 		SupabaseURL:       server.URL,
 		SupabaseSecretKey: secretKey,
-		Provider:          fakeProvider{},
 		Logger:            slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	if err != nil {
@@ -329,7 +280,6 @@ func TestWorkerRejectsCrossJobResumePath(t *testing.T) {
 func TestNewWorkerRequiresPrivilegedCredential(t *testing.T) {
 	_, err := NewWorker(Options{
 		SupabaseURL: "https://project.supabase.co",
-		Provider:    fakeProvider{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SUPABASE_SECRET_KEY") {
 		t.Fatalf("NewWorker() error = %v, want missing privileged credential error", err)
@@ -367,5 +317,9 @@ func makeTestDOCX(t *testing.T, document string) []byte {
 }
 
 func ptr(value string) *string {
+	return &value
+}
+
+func ptrFloat(value float64) *float64 {
 	return &value
 }

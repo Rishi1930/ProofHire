@@ -26,8 +26,12 @@ type Config struct {
 	SupabaseAnonKey        string
 	SupabaseSecretKey      string
 	SupabaseServiceRoleKey string
-	GeminiAPIKey           string
-	GeminiModel            string
+	EmailProvider          string
+	EmailAPIKey            string
+	EmailWebhookSecret     string
+	EmailFromAddress       string
+	EmailFromName          string
+	AppBaseURL             string
 	ResumeOCREnabled       bool
 	ScreeningConcurrency   int
 	ScreeningPollInterval  time.Duration
@@ -59,13 +63,14 @@ func FromEnvironment() (Config, error) {
 		SupabaseAnonKey:        strings.TrimSpace(os.Getenv("SUPABASE_ANON_KEY")),
 		SupabaseSecretKey:      strings.TrimSpace(os.Getenv("SUPABASE_SECRET_KEY")),
 		SupabaseServiceRoleKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
-		GeminiAPIKey:           strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
-		GeminiModel:            strings.TrimSpace(os.Getenv("GEMINI_MODEL")),
+		EmailProvider:          strings.TrimSpace(os.Getenv("EMAIL_PROVIDER")),
+		EmailAPIKey:            strings.TrimSpace(os.Getenv("EMAIL_API_KEY")),
+		EmailWebhookSecret:     strings.TrimSpace(os.Getenv("RESEND_WEBHOOK_SECRET")),
+		EmailFromAddress:       strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS")),
+		EmailFromName:          strings.TrimSpace(os.Getenv("EMAIL_FROM_NAME")),
+		AppBaseURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/"),
 		ScreeningConcurrency:   1,
 		ScreeningPollInterval:  2 * time.Second,
-	}
-	if config.GeminiModel == "" {
-		config.GeminiModel = "gemini-3.8-flash"
 	}
 	if value := strings.TrimSpace(os.Getenv("RESUME_OCR_ENABLED")); value != "" {
 		enabled, err := strconv.ParseBool(value)
@@ -106,10 +111,6 @@ func (config Config) Validate() error {
 			return err
 		}
 	}
-	if config.GeminiModel != "" && !isGeminiModelName(config.GeminiModel) {
-		return fmt.Errorf("GEMINI_MODEL must be a model name without a URL path")
-	}
-
 	parsedURL, err := url.Parse(config.SupabaseURL)
 	if err != nil || parsedURL.Hostname() == "" {
 		return fmt.Errorf("SUPABASE_URL must be an absolute URL")
@@ -125,6 +126,44 @@ func (config Config) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("SUPABASE_URL must use HTTPS except for a loopback development URL")
+}
+
+func (config Config) ValidateEmail() error {
+	if config.EmailProvider == "" && config.EmailAPIKey == "" &&
+		config.EmailFromAddress == "" && config.EmailFromName == "" &&
+		config.AppBaseURL == "" {
+		return fmt.Errorf("email delivery is not configured")
+	}
+	if !strings.EqualFold(config.EmailProvider, "resend") {
+		return fmt.Errorf("EMAIL_PROVIDER must be resend")
+	}
+	if config.EmailAPIKey == "" {
+		return fmt.Errorf("EMAIL_API_KEY is required")
+	}
+	if !validEmailAddress(config.EmailFromAddress) {
+		return fmt.Errorf("EMAIL_FROM_ADDRESS must be a valid email address")
+	}
+	if config.EmailFromName == "" || len(config.EmailFromName) > 120 {
+		return fmt.Errorf("EMAIL_FROM_NAME must contain 1 to 120 characters")
+	}
+	return validatePublicHTTPSURL(config.AppBaseURL, "APP_BASE_URL")
+}
+
+func validatePublicHTTPSURL(value, name string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", name)
+	}
+	return nil
+}
+
+func validEmailAddress(value string) bool {
+	if len(value) < 3 || len(value) > 320 || strings.ContainsAny(value, "\r\n <>") {
+		return false
+	}
+	at := strings.LastIndexByte(value, '@')
+	return at > 0 && at < len(value)-1 && strings.Contains(value[at+1:], ".")
 }
 
 func ResolveSupabasePrivilegedCredential(secretKey, serviceRoleKey string) (string, SupabaseCredentialType, error) {
@@ -163,21 +202,6 @@ func isServiceRoleJWT(value string) bool {
 		Role string `json:"role"`
 	}
 	return json.Unmarshal(payload, &claims) == nil && claims.Role == "service_role"
-}
-
-func isGeminiModelName(value string) bool {
-	if len(value) < 1 || len(value) > 120 {
-		return false
-	}
-	for _, character := range value {
-		if !((character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') ||
-			character == '.' || character == '_' || character == '-') {
-			return false
-		}
-	}
-	return true
 }
 
 func isLoopback(host string) bool {

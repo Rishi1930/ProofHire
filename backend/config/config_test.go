@@ -12,8 +12,6 @@ func TestFromEnvironmentDefaultsScreeningConfiguration(t *testing.T) {
 	t.Setenv("SUPABASE_ANON_KEY", "public-key")
 	t.Setenv("SUPABASE_SECRET_KEY", "")
 	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "")
-	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("GEMINI_MODEL", "")
 	t.Setenv("RESUME_OCR_ENABLED", "")
 	t.Setenv("SCREENING_WORKER_CONCURRENCY", "")
 	t.Setenv("SCREENING_POLL_INTERVAL", "")
@@ -21,12 +19,6 @@ func TestFromEnvironmentDefaultsScreeningConfiguration(t *testing.T) {
 	environment, err := FromEnvironment()
 	if err != nil {
 		t.Fatalf("FromEnvironment() error = %v", err)
-	}
-	if environment.GeminiAPIKey != "" {
-		t.Fatal("missing Gemini API key should not prevent application startup")
-	}
-	if environment.GeminiModel != "gemini-3.8-flash" {
-		t.Fatalf("Gemini model = %q", environment.GeminiModel)
 	}
 	if environment.ScreeningConcurrency != 1 || environment.ScreeningPollInterval != 2*time.Second {
 		t.Fatalf("unexpected worker defaults: %+v", environment)
@@ -74,6 +66,65 @@ func TestFromEnvironmentRejectsInvalidWorkerConfiguration(t *testing.T) {
 	t.Setenv("SCREENING_WORKER_CONCURRENCY", "1")
 	if _, err := FromEnvironment(); err == nil {
 		t.Fatal("poll interval below the minimum should be rejected")
+	}
+}
+
+func TestEmailConfigurationRequiresCompleteResendSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    Config
+		wantError bool
+	}{
+		{
+			name: "email disabled",
+			config: Config{
+				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
+			},
+			wantError: true,
+		},
+		{
+			name: "valid Resend configuration",
+			config: Config{
+				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
+				EmailProvider: "resend", EmailAPIKey: "re_test", EmailFromAddress: "team@example.com",
+				EmailFromName: "ProofHire", AppBaseURL: "https://proofhire.example",
+			},
+		},
+		{
+			name: "missing API key",
+			config: Config{
+				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
+				EmailProvider: "resend", EmailFromAddress: "team@example.com",
+				EmailFromName: "ProofHire", AppBaseURL: "https://proofhire.example",
+			},
+			wantError: true,
+		},
+		{
+			name: "unsupported provider",
+			config: Config{
+				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
+				EmailProvider: "smtp",
+			},
+			wantError: true,
+		},
+		{
+			name: "insecure app URL",
+			config: Config{
+				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
+				EmailProvider: "resend", EmailAPIKey: "re_test", EmailFromAddress: "team@example.com",
+				EmailFromName: "ProofHire", AppBaseURL: "http://proofhire.example",
+			},
+			wantError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.config.ValidateEmail()
+			if (err != nil) != test.wantError {
+				t.Fatalf("Validate() error = %v, wantError %v", err, test.wantError)
+			}
+		})
 	}
 }
 
@@ -211,15 +262,6 @@ func TestValidate(t *testing.T) {
 			config: Config{
 				SupabaseURL:     "https://project.supabase.co?token=secret",
 				SupabaseAnonKey: "public-key",
-			},
-			wantError: true,
-		},
-		{
-			name: "Gemini model path rejected",
-			config: Config{
-				SupabaseURL:     "https://project.supabase.co",
-				SupabaseAnonKey: "public-key",
-				GeminiModel:     "../models/gemini",
 			},
 			wantError: true,
 		},

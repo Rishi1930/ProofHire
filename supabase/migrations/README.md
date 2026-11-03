@@ -22,6 +22,10 @@ Run migrations in timestamp order from the Supabase SQL Editor or Supabase CLI.
 18. `202611020001_application_stage_history_and_interviews.sql`
 19. `202611020002_aptitude_assessment_foundation_completion.sql`
 20. `202611020003_coding_assessment_and_email_delivery.sql`
+21. `202611020005_proofhire_live_schema_completion.sql`
+22. `202611030001_deterministic_screening_configuration.sql`
+23. `202611030002_score_aptitude_timeouts.sql`
+24. `202611030003_automated_aptitude_delivery.sql`
 
 Migration `202610260002_workspace_profile_and_account_deletion.sql` adds
 company profile fields and a 15-day account deletion queue. A returning
@@ -69,8 +73,7 @@ attempts, answers, and monitoring events. The follow-up aptitude workflow
 migration adds draft answer-key authoring, authenticated invitation creation,
 service-mediated candidate sessions, answer autosave, timer enforcement,
 server-side scoring, and limited browser-event monitoring. Candidate APIs
-return questions and options but never answer keys. Invitations are manually
-delivered; this repository does not send assessment emails.
+return questions and options but never answer keys.
 
 The resume-version migration backfills application resume paths into an
 application-scoped history table, captures future resume-path changes, and
@@ -93,7 +96,25 @@ replacing existing interview records. The aptitude foundation completion
 migration adds job-specific assessment configuration, randomized per-attempt
 question order, category/difficulty metadata, and private question-level
 scores; submitted attempts already in the database receive a score-detail
-backfill.
+backfill. The aptitude engine follow-up adds role and competency tags, active
+and approved question filtering, per-job difficulty quotas, and scores saved
+answers when an attempt expires. It does not expose private answer keys or
+modify historical migrations. Validate it on a disposable database before
+applying it to any hosted project.
+
+The automated aptitude delivery migration stores candidate invitation tokens
+only in the private schema, queues aptitude invitations and screening-result
+notices for the Resend worker, records aptitude failures for recruiter review,
+and advances passing assessments to the interview stage. If automatic aptitude
+invitation setup fails, screening remains recorded and a recruiter-visible
+workflow failure stores only a generic code and SQLSTATE. A service worker
+finalizes timed-out attempts from saved answers. Email delivery requires
+`EMAIL_PROVIDER=resend`, `EMAIL_API_KEY`, `EMAIL_FROM_ADDRESS`,
+`EMAIL_FROM_NAME`, and `APP_BASE_URL`; missing or invalid email settings do not
+prevent the backend from starting. Provider status remains
+`blocked_configuration` until configuration is available. The migration is
+additive, does not alter historical migrations, and must be validated on an
+isolated test database before deployment.
 
 The coding migration adds immutable challenge versions, private test cases and
 submission source, job configuration, invitations/attempts, and a lease-based
@@ -135,7 +156,8 @@ After migrations apply locally, inspect the schema, constraints, grants, RLS,
 functions, and storage policies using the read-only verification queries in
 the architecture document. Verify public application submission with a test
 job and disposable candidate data. The local database test does not verify
-external Gemini, email, OCR, or hosted Storage behavior.
+external email, OCR, or hosted Storage behavior. Resume screening uses a
+deterministic engine and does not require an external AI provider.
 
 ## Deploy and schedule account deletion
 

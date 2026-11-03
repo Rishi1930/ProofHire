@@ -38,6 +38,32 @@ type fakeAptitudeService struct {
 	createdInput     aptitude.InvitationInput
 }
 
+type fakeEmailQueueService struct {
+	actionArgs []string
+	eventArgs  []string
+}
+
+func (service *fakeEmailQueueService) RequestAction(
+	_ context.Context,
+	userID string,
+	workspaceID string,
+	jobID string,
+	action string,
+	requestID string,
+) (json.RawMessage, error) {
+	service.actionArgs = []string{userID, workspaceID, jobID, action, requestID}
+	return json.RawMessage(`{"id":"job-id","status":"queued"}`), nil
+}
+
+func (service *fakeEmailQueueService) RecordProviderEvent(
+	_ context.Context,
+	messageID string,
+	eventType string,
+) error {
+	service.eventArgs = []string{messageID, eventType}
+	return nil
+}
+
 func (service *fakeAptitudeService) CreateInvitation(
 	_ context.Context,
 	input aptitude.InvitationInput,
@@ -66,6 +92,17 @@ func (*fakeAptitudeService) SaveAnswer(
 	string,
 	string,
 	string,
+	json.RawMessage,
+) error {
+	return nil
+}
+
+func (*fakeAptitudeService) SaveProgress(
+	context.Context,
+	string,
+	string,
+	string,
+	int,
 	json.RawMessage,
 ) error {
 	return nil
@@ -124,8 +161,8 @@ func TestCreateAptitudeInvitationRequiresAuthorizedRecruiter(t *testing.T) {
 		t.Fatal("authenticated recruiter identity and invitation request were not forwarded")
 	}
 	if !strings.Contains(response.Body.String(), "candidate-link-token-abcdefghijklmnopqrstuvwxyz123") ||
-		!strings.Contains(response.Body.String(), `"delivery":"manual"`) {
-		t.Fatal("creator response should contain the one-time token and manual-delivery notice")
+		!strings.Contains(response.Body.String(), `"delivery":"queued"`) {
+		t.Fatal("creator response should contain the one-time token and queued-delivery notice")
 	}
 }
 
@@ -133,6 +170,7 @@ func TestCandidateAptitudeSessionIsPublicAndUncached(t *testing.T) {
 	service := &fakeAptitudeService{
 		candidateSession: json.RawMessage(`{"title":"Test","questions":[]}`),
 	}
+
 	handler := NewHandlerWithAptitude(
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			t.Fatal("candidate test sessions do not use recruiter authentication")

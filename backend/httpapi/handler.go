@@ -12,6 +12,7 @@ import (
 
 	"github.com/rishi1930/proofhire/backend/aptitude"
 	"github.com/rishi1930/proofhire/backend/config"
+	"github.com/rishi1930/proofhire/backend/email"
 	"github.com/rishi1930/proofhire/backend/supabaseauth"
 )
 
@@ -26,9 +27,11 @@ type accessVerifier interface {
 }
 
 type apiHandler struct {
-	verifier accessVerifier
-	aptitude aptitudeService
-	logger   *slog.Logger
+	verifier            accessVerifier
+	aptitude            aptitudeService
+	emailQueue          emailQueueService
+	resendWebhookSecret string
+	logger              *slog.Logger
 }
 
 type aptitudeService interface {
@@ -36,8 +39,21 @@ type aptitudeService interface {
 	CandidateSession(context.Context, string) (json.RawMessage, error)
 	StartAttempt(context.Context, string) (json.RawMessage, error)
 	SaveAnswer(context.Context, string, string, string, json.RawMessage) error
+	SaveProgress(context.Context, string, string, string, int, json.RawMessage) error
 	SubmitAttempt(context.Context, string, string) (json.RawMessage, error)
 	RecordEvent(context.Context, string, string, string, json.RawMessage) error
+}
+
+type emailQueueService interface {
+	RequestAction(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		string,
+	) (json.RawMessage, error)
+	RecordProviderEvent(context.Context, string, string) error
 }
 
 func NewHandler(verifier accessVerifier, logger *slog.Logger) http.Handler {
@@ -49,13 +65,34 @@ func NewHandlerWithAptitude(
 	aptitudeClient aptitudeService,
 	logger *slog.Logger,
 ) http.Handler {
+	return NewHandlerWithIntegrations(verifier, aptitudeClient, nil, "", logger)
+}
+
+func NewHandlerWithAptitudeAndEmail(
+	verifier accessVerifier,
+	aptitudeClient aptitudeService,
+	emailQueue emailQueueService,
+	logger *slog.Logger,
+) http.Handler {
+	return NewHandlerWithIntegrations(verifier, aptitudeClient, emailQueue, "", logger)
+}
+
+func NewHandlerWithIntegrations(
+	verifier accessVerifier,
+	aptitudeClient aptitudeService,
+	emailQueue emailQueueService,
+	webhookSecret string,
+	logger *slog.Logger,
+) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	handler := &apiHandler{
-		verifier: verifier,
-		aptitude: aptitudeClient,
-		logger:   logger,
+		verifier:            verifier,
+		aptitude:            aptitudeClient,
+		emailQueue:          emailQueue,
+		resendWebhookSecret: webhookSecret,
+		logger:              logger,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", handler.health)
@@ -65,8 +102,11 @@ func NewHandlerWithAptitude(
 	mux.HandleFunc("POST /api/v1/aptitude/candidate/session", handler.getAptitudeCandidateSession)
 	mux.HandleFunc("POST /api/v1/aptitude/candidate/start", handler.startAptitudeCandidateAttempt)
 	mux.HandleFunc("POST /api/v1/aptitude/candidate/answer", handler.saveAptitudeCandidateAnswer)
+	mux.HandleFunc("POST /api/v1/aptitude/candidate/progress", handler.saveAptitudeCandidateProgress)
 	mux.HandleFunc("POST /api/v1/aptitude/candidate/submit", handler.submitAptitudeCandidateAttempt)
 	mux.HandleFunc("POST /api/v1/aptitude/candidate/event", handler.recordAptitudeCandidateEvent)
+	mux.HandleFunc("POST /api/v1/email-delivery/{jobID}/action", handler.requestEmailDeliveryAction)
+	mux.HandleFunc("POST /api/webhooks/resend", handler.resendWebhook)
 	return handler.withRequestID(mux)
 }
 
@@ -76,16 +116,24 @@ func NewHandlerFromEnvironment(logger *slog.Logger) (http.Handler, error) {
 		return nil, err
 	}
 	var aptitudeClient aptitudeService
+	var emailQueueClient emailQueueService
 	if environment.SupabaseSecretKey != "" || environment.SupabaseServiceRoleKey != "" {
 		client, err := aptitude.NewClient(environment)
 		if err != nil {
 			return nil, err
 		}
 		aptitudeClient = client
+		queueClient, err := email.NewQueueClient(environment)
+		if err != nil {
+			return nil, err
+		}
+		emailQueueClient = queueClient
 	}
-	return NewHandlerWithAptitude(
+	return NewHandlerWithIntegrations(
 		supabaseauth.NewClient(environment),
 		aptitudeClient,
+		emailQueueClient,
+		environment.EmailWebhookSecret,
 		logger,
 	), nil
 }

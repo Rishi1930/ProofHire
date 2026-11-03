@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rishi1930/proofhire/backend/config"
 	"github.com/rishi1930/proofhire/backend/httpapi"
 )
 

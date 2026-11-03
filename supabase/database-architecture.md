@@ -439,7 +439,7 @@ Security observations:
 ## Frontend/backend compatibility
 
 - `src/lib/supabase.ts` uses only `VITE_SUPABASE_URL` and a publishable/anon key;
-  no service-role or Gemini key belongs in frontend configuration.
+  no privileged key belongs in frontend configuration.
 - `src/lib/workspace.ts` and settings/jobs code query `workspace_members`,
   `workspaces`, and their current columns directly.
 - The active public route is `src/applications/PublicApplication.tsx`; it
@@ -493,6 +493,7 @@ After local replay, verify (read-only) the following:
     workspace isolation, coding version immutability and service-role lease
     transitions, email idempotency/manual status, and summary-view RLS.
 
-No live schema, migration, RLS, Storage, Gemini, email, OCR, or production
-behavior is claimed as verified until these tests run against the identified
-test environment.
+No live schema, migration, RLS, Storage, email, OCR, or production behavior is
+claimed as verified until these tests run against the identified test
+environment. Resume screening is deterministic and has no external AI-provider
+dependency.

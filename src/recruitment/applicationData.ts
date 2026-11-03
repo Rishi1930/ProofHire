@@ -76,18 +76,35 @@ export type ScreeningReport = {
   findings: ScreeningRequirementFinding[]
   evidence_coverage: number
   scoring_method: string
+  category_scores?: Array<{
+    category: string
+    earned_weight: number
+    available_weight: number
+    score: number
+  }>
+  matched_requirements?: string[]
+  partially_matched_requirements?: string[]
+  unmatched_requirements?: string[]
+  parsing_status?: string
+  resume_format?: string
+  resume_sha256?: string
+  screened_at?: string
+  engine_version?: string
+  minimum_threshold?: number
+  threshold_met?: boolean
 }
 
 export type ScreeningCriteria = {
-  summary: string
-  experience_mandatory: boolean
-  clarifications: string[]
+  summary?: string
+  experience_mandatory?: boolean
+  clarifications?: string[]
   requirements: Array<{
     key: string
     name: string
     description: string
-    priority: 'essential' | 'preferred'
+    priority: 'mandatory' | 'preferred'
     category: string
+    weight?: number
   }>
 }
 
@@ -242,9 +259,28 @@ export async function getWorkspaceApplications(
   for (let start = 0; ; start += pageSize) {
     const { data, error } = await client
       .from('applications')
-      .select(
-        'id, workspace_id, candidate_id, job_id, status, source, applied_at, created_at, resume_path, candidates(full_name, email, phone, linkedin_url, resume_path), jobs(title, department)',
-      )
+.select(`
+  id,
+  workspace_id,
+  candidate_id,
+  job_id,
+  status,
+  source,
+  applied_at,
+  created_at,
+  resume_path,
+  candidates!applications_candidate_id_fkey(
+    full_name,
+    email,
+    phone,
+    linkedin_url,
+    resume_path
+  ),
+  jobs!applications_job_id_fkey(
+    title,
+    department
+  )
+`)
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })
       .range(start, start + pageSize - 1)

@@ -149,7 +149,7 @@ export default function App() {
 
             <div className="nav-link nav-link-disabled" aria-disabled="true">
               <BrainCircuit size={18} strokeWidth={1.8} />
-              <span>AI insights</span>
+              <span>Recruitment insights</span>
               <span className="coming-soon">Later</span>
             </div>
 

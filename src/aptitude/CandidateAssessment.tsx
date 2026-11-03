@@ -5,13 +5,28 @@ import Button from '../components/Button'
 import {
   getCandidateSession,
   recordCandidateEvent,
-  saveCandidateAnswer,
+  saveCandidateProgress,
   startCandidateAttempt,
   submitCandidateAttempt,
   type AptitudeQuestion,
   type AptitudeSubmission,
   type CandidateAptitudeSession,
 } from './api'
+
+type LocalAnswer = {
+  value: unknown
+  updatedAt: string
+  synced: boolean
+  questionIndex: number
+}
+
+type LocalProgress = {
+  answers: Record<string, LocalAnswer>
+  attemptId: string
+  currentQuestionIndex: number
+  positionUpdatedAt: string
+  positionSynced: boolean
+}
 
 function answerOptions(answer: unknown): string[] {
   if (
@@ -42,18 +57,81 @@ export default function CandidateAssessment() {
   const [attemptId, setAttemptId] = useState('')
   const [startedAt, setStartedAt] = useState('')
   const [answers, setAnswers] = useState<Record<string, unknown>>({})
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const [remainingSeconds, setRemainingSeconds] = useState(0)
   const [submission, setSubmission] = useState<AptitudeSubmission | null>(null)
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [savingQuestion, setSavingQuestion] = useState('')
+  const [syncState, setSyncState] = useState<'saved' | 'saving' | 'offline' | 'error'>('saved')
   const [consent, setConsent] = useState(false)
   const [error, setError] = useState('')
   const attemptRef = useRef('')
+  const answersRef = useRef<Record<string, unknown>>({})
   const pendingSaves = useRef(new Map<string, Promise<void>>())
+  const shortTextTimers = useRef(new Map<string, number>())
+  const unsyncedAnswers = useRef(new Map<string, LocalAnswer>())
+  const localProgress = useRef<LocalProgress>({
+    answers: {},
+    attemptId: '',
+    currentQuestionIndex: 0,
+    positionUpdatedAt: '',
+    positionSynced: true,
+  })
+  const backupKey = useRef('')
+  const deadlineMonotonic = useRef<number | null>(null)
   const submitLock = useRef(false)
   const lastEventAt = useRef(new Map<string, number>())
+
+  function persistLocalProgress(progress: LocalProgress) {
+    localProgress.current = progress
+    if (!backupKey.current) return
+    try {
+      window.localStorage.setItem(backupKey.current, JSON.stringify(progress))
+    } catch {
+      setError('The offline backup could not be saved in this browser.')
+      setSyncState('error')
+    }
+  }
+
+  function readLocalProgress(key: string): LocalProgress | null {
+    try {
+      const raw = window.localStorage.getItem(key)
+      if (!raw) return null
+      const value = JSON.parse(raw) as Partial<LocalProgress>
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        typeof value.answers !== 'object' ||
+        value.answers === null ||
+        !Number.isInteger(value.currentQuestionIndex)
+      ) {
+        return null
+      }
+      return {
+        answers: value.answers as Record<string, LocalAnswer>,
+        attemptId: value.attemptId ?? '',
+        currentQuestionIndex: value.currentQuestionIndex as number,
+        positionUpdatedAt: value.positionUpdatedAt ?? '',
+        positionSynced: value.positionSynced ?? true,
+      }
+    } catch {
+      setError('The local progress backup could not be read.')
+      setSyncState('error')
+      return null
+    }
+  }
+
+  function updateDeadline(data: CandidateAptitudeSession) {
+    if (data.deadline_at && data.server_now) {
+      const remaining =
+        new Date(data.deadline_at).getTime() - new Date(data.server_now).getTime()
+      deadlineMonotonic.current = performance.now() + Math.max(0, remaining)
+    } else {
+      deadlineMonotonic.current = null
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -63,12 +141,47 @@ export default function CandidateAssessment() {
       try {
         const data = await getCandidateSession(token)
         if (!active) return
+        backupKey.current = `proofhire-aptitude-${data.invitation_id}`
+        const storedProgress = readLocalProgress(backupKey.current)
+        const savedProgress =
+          storedProgress?.attemptId === data.active_attempt_id ? storedProgress : null
+        const serverAnswers = data.saved_answers ?? {}
+        const mergedAnswers = { ...serverAnswers }
+        unsyncedAnswers.current.clear()
+        if (savedProgress) {
+          for (const [questionId, answer] of Object.entries(savedProgress.answers)) {
+            if (answer.synced === false && data.questions.some((question) => question.id === questionId)) {
+              mergedAnswers[questionId] = answer.value
+              unsyncedAnswers.current.set(questionId, answer)
+            }
+          }
+        }
+        const serverIndex = data.current_question_index ?? 0
+        const currentIndex =
+          savedProgress && !savedProgress.positionSynced &&
+          data.questions[savedProgress.currentQuestionIndex]
+            ? savedProgress.currentQuestionIndex
+            : serverIndex
+        localProgress.current = savedProgress ?? {
+          answers: {},
+          attemptId: data.active_attempt_id ?? '',
+          currentQuestionIndex: serverIndex,
+          positionUpdatedAt: data.current_question_updated_at ?? '',
+          positionSynced: true,
+        }
+        answersRef.current = mergedAnswers
+        updateDeadline(data)
         setSession(data)
-        setAnswers(data.saved_answers ?? {})
+        setAnswers(mergedAnswers)
+        setCurrentQuestionIndex(currentIndex)
         if (data.active_attempt_id && data.active_attempt_started_at) {
           setAttemptId(data.active_attempt_id)
           attemptRef.current = data.active_attempt_id
           setStartedAt(data.active_attempt_started_at)
+          if (unsyncedAnswers.current.size > 0 ||
+            (savedProgress && !savedProgress.positionSynced)) {
+            setSyncState(navigator.onLine ? 'saving' : 'offline')
+          }
         }
       } catch (caughtError) {
         if (active) {
@@ -88,21 +201,123 @@ export default function CandidateAssessment() {
     }
   }, [token])
 
+  function markAnswerSynced(questionId: string, updatedAt: string) {
+    const current = localProgress.current.answers[questionId]
+    if (!current || current.updatedAt !== updatedAt) return
+    const nextAnswer = { ...current, synced: true }
+    const nextAnswers = { ...localProgress.current.answers, [questionId]: nextAnswer }
+    persistLocalProgress({
+      ...localProgress.current,
+      answers: nextAnswers,
+      positionSynced:
+        localProgress.current.positionUpdatedAt === updatedAt
+          ? true
+          : localProgress.current.positionSynced,
+    })
+    unsyncedAnswers.current.delete(questionId)
+    if (unsyncedAnswers.current.size === 0 && localProgress.current.positionSynced) {
+      setSyncState('saved')
+    }
+  }
+
+  function sendAnswerProgress(question: AptitudeQuestion, answer: LocalAnswer) {
+    if (!navigator.onLine) {
+      setSyncState('offline')
+      return
+    }
+    setSyncState('saving')
+    setSavingQuestion(question.id)
+    const previous = pendingSaves.current.get(question.id) ?? Promise.resolve()
+    const next = previous
+      .catch(() => undefined)
+      .then(() =>
+        saveCandidateProgress(
+          token,
+          attemptRef.current,
+          question.id,
+          answer.questionIndex,
+          answer.value,
+        ),
+      )
+      .then(
+        () => {
+          markAnswerSynced(question.id, answer.updatedAt)
+          setSavingQuestion((current) => current === question.id ? '' : current)
+        },
+        (caughtError: unknown) => {
+          setSavingQuestion((current) => current === question.id ? '' : current)
+          setSyncState(navigator.onLine ? 'error' : 'offline')
+          setError(
+            caughtError instanceof Error
+              ? caughtError.message
+              : 'Your progress could not be synced. It will retry when your connection returns.',
+          )
+        },
+      )
+      .finally(() => {
+        if (pendingSaves.current.get(question.id) === next) {
+          pendingSaves.current.delete(question.id)
+        }
+      })
+    pendingSaves.current.set(question.id, next)
+  }
+
+  async function flushUnsyncedProgress() {
+    for (const timer of shortTextTimers.current.values()) {
+      window.clearTimeout(timer)
+    }
+    shortTextTimers.current.clear()
+    await Promise.all([...pendingSaves.current.values()])
+    if (!navigator.onLine) {
+      setSyncState('offline')
+      throw new Error('You are offline. Your answers are saved on this device and will sync when reconnected.')
+    }
+    for (const [questionId, answer] of [...unsyncedAnswers.current.entries()]) {
+      const question = session?.questions.find((item) => item.id === questionId)
+      if (!question) continue
+      await saveCandidateProgress(
+        token,
+        attemptRef.current,
+        questionId,
+        answer.questionIndex,
+        answer.value,
+      )
+      markAnswerSynced(questionId, answer.updatedAt)
+    }
+    if (!localProgress.current.positionSynced) {
+      const index = localProgress.current.currentQuestionIndex
+      const question = session?.questions[index]
+      if (question) {
+        await saveCandidateProgress(
+          token,
+          attemptRef.current,
+          question.id,
+          index,
+        )
+        persistLocalProgress({
+          ...localProgress.current,
+          positionSynced: true,
+        })
+      }
+    }
+    setSyncState('saved')
+  }
+
   const submit = useCallback(async () => {
     if (!attemptRef.current || submitLock.current) return
     submitLock.current = true
     setSubmitting(true)
     setError('')
     try {
-      await Promise.all([...pendingSaves.current.values()])
-      for (const question of session?.questions ?? []) {
-        const answer = answers[question.id]
-        if (answer !== undefined) {
-          await saveCandidateAnswer(token, attemptRef.current, question.id, answer)
-        }
-      }
+      await flushUnsyncedProgress()
       const result = await submitCandidateAttempt(token, attemptRef.current)
       setSubmission(result)
+      unsyncedAnswers.current.clear()
+      try {
+        if (backupKey.current) window.localStorage.removeItem(backupKey.current)
+      } catch {
+        setError('The assessment was submitted, but the local backup could not be cleared.')
+      }
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -113,14 +328,21 @@ export default function CandidateAssessment() {
     } finally {
       setSubmitting(false)
     }
-  }, [answers, session?.questions, token])
+  }, [session?.questions, token])
 
   useEffect(() => {
     if (!attemptId || !startedAt || submission) return
     const updateTime = () => {
-      const deadline =
-        new Date(startedAt).getTime() + (session?.time_limit_seconds ?? 0) * 1000
-      setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)))
+      const deadline = deadlineMonotonic.current ??
+        performance.now() +
+          Math.max(
+            0,
+            new Date(startedAt).getTime() +
+              (session?.time_limit_seconds ?? 0) * 1000 -
+              Date.now(),
+          )
+      deadlineMonotonic.current = deadline
+      setRemainingSeconds(Math.max(0, Math.ceil((deadline - performance.now()) / 1000)))
     }
     updateTime()
     const timer = window.setInterval(updateTime, 1000)
@@ -133,13 +355,12 @@ export default function CandidateAssessment() {
       startedAt &&
       !submission &&
       !loading &&
-      Date.now() >=
-        new Date(startedAt).getTime() +
-          (session?.time_limit_seconds ?? 0) * 1000
+      deadlineMonotonic.current !== null &&
+      performance.now() >= deadlineMonotonic.current
     ) {
       void submit()
     }
-  }, [attemptId, loading, session?.time_limit_seconds, startedAt, submit, submission])
+  }, [attemptId, loading, remainingSeconds, startedAt, submit, submission])
 
   useEffect(() => {
     if (!attemptId || submission) return
@@ -160,7 +381,10 @@ export default function CandidateAssessment() {
     }
     const lostFocus = () => sendEvent('focus_lost')
     const wentOffline = () => sendEvent('network_disconnected')
-    const wentOnline = () => sendEvent('network_reconnected')
+    const wentOnline = () => {
+      sendEvent('network_reconnected')
+      void flushUnsyncedProgress().catch(() => undefined)
+    }
     const copied = () => sendEvent('copy_attempt')
     const pasted = () => sendEvent('paste_attempt')
 
@@ -178,15 +402,34 @@ export default function CandidateAssessment() {
       document.removeEventListener('copy', copied)
       document.removeEventListener('paste', pasted)
     }
-  }, [attemptId, submission, token])
+  }, [attemptId, flushUnsyncedProgress, submission, token])
+
+  useEffect(() => {
+    if (!attemptId || submission) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      const hasUnsynced =
+        unsyncedAnswers.current.size > 0 ||
+        !localProgress.current.positionSynced ||
+        pendingSaves.current.size > 0
+      if (hasUnsynced || !navigator.onLine) {
+        event.preventDefault()
+        event.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [attemptId, submission, syncState])
 
   async function beginAttempt() {
     setStarting(true)
     setError('')
     try {
       const data = await startCandidateAttempt(token)
+      updateDeadline(data)
       setSession(data)
-      setAnswers(data.saved_answers ?? {})
+      const restoredAnswers = data.saved_answers ?? {}
+      answersRef.current = restoredAnswers
+      setAnswers(restoredAnswers)
       const id = data.attempt_id ?? data.active_attempt_id
       const date = data.started_at ?? data.active_attempt_started_at
       if (!id || !date) {
@@ -196,6 +439,15 @@ export default function CandidateAssessment() {
         return
       }
       attemptRef.current = id
+      const index = data.current_question_index ?? 0
+      setCurrentQuestionIndex(index)
+      persistLocalProgress({
+        answers: {},
+        attemptId: id,
+        currentQuestionIndex: index,
+        positionUpdatedAt: data.current_question_updated_at ?? '',
+        positionSynced: true,
+      })
       setAttemptId(id)
       setStartedAt(date)
     } catch (caughtError) {
@@ -210,34 +462,98 @@ export default function CandidateAssessment() {
   }
 
   function updateAnswer(question: AptitudeQuestion, nextAnswer: unknown) {
-    setAnswers((current) => ({ ...current, [question.id]: nextAnswer }))
-    if (!attemptId || question.question_type === 'short_text') return
+    const updatedAnswers = { ...answersRef.current, [question.id]: nextAnswer }
+    answersRef.current = updatedAnswers
+    setAnswers(updatedAnswers)
+    if (!attemptRef.current) return
 
-    setSavingQuestion(question.id)
-    const previous = pendingSaves.current.get(question.id) ?? Promise.resolve()
+    const questionIndex = session?.questions.findIndex((item) => item.id === question.id) ?? -1
+    if (questionIndex < 0) return
+    const updatedAt = new Date().toISOString()
+    const record: LocalAnswer = {
+      value: nextAnswer,
+      updatedAt,
+      synced: false,
+      questionIndex,
+    }
+    unsyncedAnswers.current.set(question.id, record)
+    const nextAnswers = { ...localProgress.current.answers, [question.id]: record }
+    persistLocalProgress({
+      ...localProgress.current,
+      answers: nextAnswers,
+      attemptId: attemptRef.current,
+      currentQuestionIndex: questionIndex,
+      positionUpdatedAt: updatedAt,
+      positionSynced: false,
+    })
+    setCurrentQuestionIndex(questionIndex)
+    if (!navigator.onLine) {
+      setSyncState('offline')
+      return
+    }
+    const existingTimer = shortTextTimers.current.get(question.id)
+    if (existingTimer) window.clearTimeout(existingTimer)
+    if (question.question_type === 'short_text') {
+      shortTextTimers.current.set(
+        question.id,
+        window.setTimeout(() => {
+          shortTextTimers.current.delete(question.id)
+          sendAnswerProgress(question, record)
+        }, 500),
+      )
+    } else {
+      sendAnswerProgress(question, record)
+    }
+  }
+
+  function updateQuestionPosition(index: number) {
+    const question = session?.questions[index]
+    if (!question || !attemptRef.current) return
+    const updatedAt = new Date().toISOString()
+    setCurrentQuestionIndex(index)
+    persistLocalProgress({
+      ...localProgress.current,
+      attemptId: attemptRef.current,
+      currentQuestionIndex: index,
+      positionUpdatedAt: updatedAt,
+      positionSynced: false,
+    })
+    if (!navigator.onLine) {
+      setSyncState('offline')
+      return
+    }
+    const pending = [...pendingSaves.current.entries()]
+      .filter(([key]) => key !== '__position')
+      .map(([, promise]) => promise)
+    const previous = pendingSaves.current.get('__position') ?? Promise.resolve()
     const next = previous
       .catch(() => undefined)
       .then(async () => {
-        await saveCandidateAnswer(token, attemptId, question.id, nextAnswer)
+        await Promise.all(pending)
+        await saveCandidateProgress(token, attemptRef.current, question.id, index)
       })
       .then(
         () => {
-          setSavingQuestion((current) => current === question.id ? '' : current)
+          if (localProgress.current.positionUpdatedAt === updatedAt) {
+            persistLocalProgress({ ...localProgress.current, positionSynced: true })
+          }
+          setSyncState(unsyncedAnswers.current.size ? 'saving' : 'saved')
         },
-        (caughtError: unknown) => {
-          setSavingQuestion((current) => current === question.id ? '' : current)
-          setError(
-            caughtError instanceof Error
-              ? caughtError.message
-              : 'Your answer could not be saved.',
-          )
+        () => {
+          setSyncState(navigator.onLine ? 'error' : 'offline')
+          setError('Your current question could not be synced. It will retry when your connection returns.')
         },
       )
-    pendingSaves.current.set(question.id, next)
+      .finally(() => {
+        if (pendingSaves.current.get('__position') === next) {
+          pendingSaves.current.delete('__position')
+        }
+      })
+    pendingSaves.current.set('__position', next)
   }
 
   function onChoiceChange(question: AptitudeQuestion, optionID: string) {
-    const currentOptions = answerOptions(answers[question.id])
+    const currentOptions = answerOptions(answersRef.current[question.id])
     let nextOptions: string[]
     if (question.question_type === 'single_choice') {
       nextOptions = currentOptions.includes(optionID) ? [] : [optionID]
@@ -339,6 +655,30 @@ export default function CandidateAssessment() {
                 <div className="candidate-assessment-timer" aria-live="polite">
                   Time remaining <strong>{formatTime(remainingSeconds)}</strong>
                 </div>
+                <label className="candidate-question-position">
+                  Current question
+                  <select
+                    value={currentQuestionIndex}
+                    onChange={(event) =>
+                      updateQuestionPosition(Number(event.target.value))
+                    }
+                  >
+                    {session.questions.map((question, index) => (
+                      <option key={question.id} value={index}>
+                        {question.display_order} of {session.questions.length}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="candidate-assessment-sync" aria-live="polite">
+                  {syncState === 'offline'
+                    ? 'Offline — progress is saved on this device and will sync when reconnected.'
+                    : syncState === 'saving'
+                      ? 'Syncing your progress…'
+                      : syncState === 'error'
+                        ? 'Progress sync needs attention.'
+                        : 'Progress saved to your account.'}
+                </p>
                 <div className="candidate-assessment-questions">
                   {session.questions.map((question) => (
                     <fieldset className="candidate-question" key={question.id}>
@@ -352,28 +692,6 @@ export default function CandidateAssessment() {
                           maxLength={5000}
                           value={answerText(answers[question.id])}
                           onChange={(event) => updateAnswer(question, event.target.value)}
-                          onBlur={() => {
-                            const answer = answers[question.id]
-                            if (answer !== undefined) {
-                              setSavingQuestion(question.id)
-                              void saveCandidateAnswer(
-                                token,
-                                attemptId,
-                                question.id,
-                                answer,
-                              ).then(
-                                () => setSavingQuestion(''),
-                                (caughtError: unknown) => {
-                                  setSavingQuestion('')
-                                  setError(
-                                    caughtError instanceof Error
-                                      ? caughtError.message
-                                      : 'Your answer could not be saved.',
-                                  )
-                                },
-                              )
-                            }
-                          }}
                         />
                       ) : (
                         <div className="candidate-question-options">

@@ -43,6 +43,12 @@ export type Job = {
   required_skills: string[]
   preferred_skills: string[]
   minimum_experience: number | null
+  minimum_screening_percentage: number
+  screening_weights: {
+    mandatory: number
+    preferred: number
+    experience: number
+  }
   status: JobStatus
   created_at: string
 }
@@ -57,6 +63,11 @@ type JobForm = {
   required_skills: string
   preferred_skills: string
   minimum_experience: string
+  minimum_screening_percentage: string
+  mandatory_weight: string
+  preferred_weight: string
+  experience_weight: string
+  additional_requirements: string
   status: JobStatus
 }
 
@@ -70,8 +81,23 @@ const emptyForm: JobForm = {
   required_skills: '',
   preferred_skills: '',
   minimum_experience: '',
+  minimum_screening_percentage: '70',
+  mandatory_weight: '2',
+  preferred_weight: '1',
+  experience_weight: '2',
+  additional_requirements: '',
   status: 'draft',
 }
+
+const screeningCategories = new Set([
+  'skill',
+  'experience',
+  'education',
+  'work_experience',
+  'project',
+  'certification',
+  'qualification',
+])
 
 const statusLabels: Record<JobStatus, string> = {
   draft: 'Draft',
@@ -99,6 +125,60 @@ function parseSkills(value: string) {
       seen.add(normalized)
       return true
     })
+}
+
+function parseAdditionalRequirements(value: string) {
+  const rows = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (rows.length > 50) {
+    throw new Error('Add no more than 50 additional screening requirements.')
+  }
+  const seen = new Set<string>()
+  return rows.map((row, index) => {
+    const parts = row.split('|')
+    const [category, priority, name, description = '', weightText] = parts
+      .map((part) => part.trim())
+    if (
+      parts.length !== 5 ||
+      !screeningCategories.has(category) ||
+      !['mandatory', 'preferred'].includes(priority) ||
+      !name ||
+      name.length > 180 ||
+      description.length > 2000 ||
+      !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(weightText ?? '')
+    ) {
+      throw new Error(
+        `Requirement line ${index + 1} must use: category | mandatory/preferred | name | description | weight.`,
+      )
+    }
+    const key = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 60)
+    if (!key) {
+      throw new Error(`Requirement line ${index + 1} needs an alphanumeric name.`)
+    }
+    if (seen.has(key)) {
+      throw new Error(`Requirement line ${index + 1} repeats a requirement name.`)
+    }
+    seen.add(key)
+    const uniqueKey = `${key}-${index + 1}`
+    const weight = Number(weightText)
+    if (!Number.isFinite(weight) || weight <= 0 || weight > 1000) {
+      throw new Error(`Requirement line ${index + 1} weight must be between 0 and 1000.`)
+    }
+    return {
+      requirement_key: uniqueKey,
+      category,
+      priority,
+      name,
+      description,
+      weight,
+    }
+  })
 }
 
 export default function Jobs() {
@@ -194,7 +274,7 @@ export default function Jobs() {
         const { data, error } = await supabase
           .from('jobs')
           .select(
-            'id, workspace_id, title, department, location, employment_type, workplace_type, description, required_skills, preferred_skills, minimum_experience, status, created_at',
+            'id, workspace_id, title, department, location, employment_type, workplace_type, description, required_skills, preferred_skills, minimum_experience, minimum_screening_percentage, screening_weights, status, created_at',
           )
           .eq('workspace_id', workspaceResult.workspaceId)
           .order('created_at', { ascending: false })
@@ -225,7 +305,23 @@ export default function Jobs() {
     setShowForm(true)
   }
 
-  function openEditForm(job: Job) {
+  async function openEditForm(job: Job) {
+    if (!supabase) {
+      setErrorMessage('Configure Supabase before editing screening requirements.')
+      return
+    }
+    setErrorMessage('')
+    const { data: requirements, error: requirementsError } = await supabase
+      .from('job_screening_requirements')
+      .select('category, priority, name, description, weight')
+      .eq('workspace_id', job.workspace_id)
+      .eq('job_id', job.id)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+    if (requirementsError) {
+      setErrorMessage(getErrorMessage(requirementsError))
+      return
+    }
     setEditingJob(job)
     setForm({
       title: job.title,
@@ -237,9 +333,24 @@ export default function Jobs() {
       required_skills: (job.required_skills ?? []).join(', '),
       preferred_skills: (job.preferred_skills ?? []).join(', '),
       minimum_experience:
-        job.minimum_experience === null
+        job.minimum_experience === null || job.minimum_experience === 0
           ? ''
           : String(job.minimum_experience),
+      minimum_screening_percentage: String(job.minimum_screening_percentage ?? 70),
+      mandatory_weight: String(job.screening_weights?.mandatory ?? 2),
+      preferred_weight: String(job.screening_weights?.preferred ?? 1),
+      experience_weight: String(job.screening_weights?.experience ?? 2),
+      additional_requirements: (requirements ?? [])
+        .map((requirement) =>
+          [
+            requirement.category,
+            requirement.priority,
+            requirement.name,
+            requirement.description,
+            requirement.weight,
+          ].join(' | '),
+        )
+        .join('\n'),
       status: job.status,
     })
     setErrorMessage('')
@@ -259,18 +370,46 @@ export default function Jobs() {
 
     const experienceValue = form.minimum_experience.trim()
     const minimumExperience =
-      experienceValue === '' ? null : Number(experienceValue)
+      experienceValue === '' ? 0 : Number(experienceValue)
+    const threshold = Number(form.minimum_screening_percentage)
+    const screeningWeights = {
+      mandatory: Number(form.mandatory_weight),
+      preferred: Number(form.preferred_weight),
+      experience: Number(form.experience_weight),
+    }
 
     if (
       experienceValue !== '' &&
       (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(experienceValue) ||
         !Number.isFinite(minimumExperience) ||
-        minimumExperience === null ||
-        minimumExperience < 0)
+        minimumExperience < 0 ||
+        minimumExperience > 999.9)
     ) {
       setErrorMessage(
-        'Minimum experience must be a valid number of years greater than or equal to 0.',
+        'Minimum experience must be between 0 and 999.9 years.',
       )
+      return
+    }
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+      setErrorMessage('Minimum screening percentage must be between 0 and 100.')
+      return
+    }
+    if (
+      Object.values(screeningWeights).some(
+        (weight) => !Number.isFinite(weight) || weight <= 0 || weight > 1000,
+      )
+    ) {
+      setErrorMessage('Screening weights must be positive numbers up to 1000.')
+      return
+    }
+
+    let additionalRequirements: ReturnType<typeof parseAdditionalRequirements>
+    try {
+      additionalRequirements = parseAdditionalRequirements(
+        form.additional_requirements,
+      )
+    } catch (caughtError) {
+      setErrorMessage(getErrorMessage(caughtError))
       return
     }
 
@@ -285,6 +424,8 @@ export default function Jobs() {
       required_skills: parseSkills(form.required_skills),
       preferred_skills: parseSkills(form.preferred_skills),
       minimum_experience: minimumExperience,
+      minimum_screening_percentage: threshold,
+      screening_weights: screeningWeights,
       status: form.status,
     }
 
@@ -304,6 +445,14 @@ export default function Jobs() {
             'This job was not updated. It may have been removed or you may not have permission.',
           )
         }
+        const { error: requirementsError } = await supabase.rpc(
+          'replace_job_screening_requirements',
+          {
+            target_job_id: editingJob.id,
+            target_requirements: additionalRequirements,
+          },
+        )
+        if (requirementsError) throw requirementsError
       } else {
         const { data: authData, error: authError } =
           await supabase.auth.getUser()
@@ -321,13 +470,21 @@ export default function Jobs() {
           )
         }
 
-        const { error } = await supabase.from('jobs').insert({
+        const { data: createdJob, error } = await supabase.from('jobs').insert({
           ...payload,
           workspace_id: workspaceResult.workspaceId,
           created_by: authData.user.id,
-        })
+        }).select('id').single()
 
         if (error) throw error
+        const { error: requirementsError } = await supabase.rpc(
+          'replace_job_screening_requirements',
+          {
+            target_job_id: createdJob.id,
+            target_requirements: additionalRequirements,
+          },
+        )
+        if (requirementsError) throw requirementsError
       }
 
       setShowForm(false)
@@ -436,7 +593,10 @@ export default function Jobs() {
       },
       {
         header: 'Minimum experience (years)',
-        value: (job: Job) => job.minimum_experience,
+        value: (job: Job) =>
+          job.minimum_experience && job.minimum_experience > 0
+            ? job.minimum_experience
+            : '',
       },
       { header: 'Created at', value: (job: Job) => job.created_at },
       {
@@ -810,11 +970,11 @@ export default function Jobs() {
                     <span>{job.employment_type}</span>
                     <span>{job.workplace_type}</span>
                   </div>
-                  {(job.minimum_experience !== null ||
+                  {(job.minimum_experience !== null && job.minimum_experience > 0 ||
                     job.required_skills.length > 0 ||
                     job.preferred_skills.length > 0) && (
                     <div className="job-requirements">
-                      {job.minimum_experience !== null && (
+                      {job.minimum_experience !== null && job.minimum_experience > 0 && (
                         <span className="job-experience">
                           {job.minimum_experience}+
                           {job.minimum_experience === 1 ? ' year' : ' years'}{' '}
@@ -1079,6 +1239,7 @@ export default function Jobs() {
                 className="form-input"
                 type="number"
                 min="0"
+                max="999.9"
                 step="any"
                 inputMode="decimal"
                 value={form.minimum_experience}
@@ -1090,6 +1251,120 @@ export default function Jobs() {
               />
               <p className="form-help" id="job-experience-help">
                 Leave blank if there is no minimum experience requirement.
+              </p>
+
+              <label className="field-label" htmlFor="job-screening-threshold">
+                Minimum screening percentage
+              </label>
+              <input
+                id="job-screening-threshold"
+                className="form-input"
+                type="number"
+                min="0"
+                max="100"
+                step="any"
+                inputMode="decimal"
+                value={form.minimum_screening_percentage}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    minimum_screening_percentage: event.target.value,
+                  })
+                }
+                required
+              />
+              <p className="form-help">
+                This is a review threshold, not an automatic rejection rule.
+                Missing resume evidence is unverified and must be reviewed.
+              </p>
+
+              <div className="form-grid-two">
+                <div>
+                  <label className="field-label" htmlFor="mandatory-weight">
+                    Mandatory weight
+                  </label>
+                  <input
+                    id="mandatory-weight"
+                    className="form-input"
+                    type="number"
+                    min="0.01"
+                    max="1000"
+                    step="any"
+                    value={form.mandatory_weight}
+                    onChange={(event) =>
+                      setForm({ ...form, mandatory_weight: event.target.value })
+                    }
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="preferred-weight">
+                    Preferred weight
+                  </label>
+                  <input
+                    id="preferred-weight"
+                    className="form-input"
+                    type="number"
+                    min="0.01"
+                    max="1000"
+                    step="any"
+                    value={form.preferred_weight}
+                    onChange={(event) =>
+                      setForm({ ...form, preferred_weight: event.target.value })
+                    }
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="experience-weight">
+                    Experience weight
+                  </label>
+                  <input
+                    id="experience-weight"
+                    className="form-input"
+                    type="number"
+                    min="0.01"
+                    max="1000"
+                    step="any"
+                    value={form.experience_weight}
+                    onChange={(event) =>
+                      setForm({ ...form, experience_weight: event.target.value })
+                    }
+                    required
+                  />
+                </div>
+              </div>
+
+              <label
+                className="field-label"
+                htmlFor="job-additional-requirements"
+              >
+                Additional screening requirements
+              </label>
+              <textarea
+                id="job-additional-requirements"
+                className="form-textarea"
+                value={form.additional_requirements}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    additional_requirements: event.target.value,
+                  })
+                }
+                rows={5}
+                maxLength={12000}
+                placeholder={'education | mandatory | Bachelor degree | Bachelor of Computer Science | 2\ncertification | preferred | Cloud certification | AWS, GCP, or Azure certificate | 1'}
+                aria-describedby="job-additional-requirements-help"
+              />
+              <p
+                className="form-help"
+                id="job-additional-requirements-help"
+              >
+                One requirement per line: category | mandatory or preferred |
+                name | resume evidence phrase | weight. Categories: skill,
+                experience, education, work_experience, project,
+                certification, qualification. Matching is literal and
+                deterministic; unmentioned details remain unknown.
               </p>
 
               <label className="field-label" htmlFor="job-description">

@@ -430,7 +430,9 @@ export function createRecruitmentWorkbookSheets(
         job.status,
         (job.required_skills ?? []).join('; '),
         (job.preferred_skills ?? []).join('; '),
-        job.minimum_experience,
+        job.minimum_experience && job.minimum_experience > 0
+          ? job.minimum_experience
+          : null,
         job.description,
         new Date(job.created_at),
         applicationCountByJob.get(job.id) ?? 0,

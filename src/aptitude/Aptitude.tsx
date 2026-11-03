@@ -5,7 +5,7 @@ import Button from '../components/Button'
 import { useAuth } from '../auth/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useWorkspaceApplications } from '../recruitment/useWorkspaceApplications'
-import { createAptitudeInvitation } from './api'
+import { createAptitudeInvitation, requestEmailDeliveryAction } from './api'
 
 type TestRecord = {
   id: string
@@ -34,6 +34,8 @@ type QuestionRecord = {
   points: number
   category: string
   difficulty: 'beginner' | 'medium' | 'advanced' | 'expert'
+  job_roles: string[]
+  competencies: string[]
   options: Array<{ id: string; option_text: string }>
 }
 
@@ -45,6 +47,7 @@ type InvitationRecord = {
   status: string
   email_status: string
   email_error_code: string | null
+  max_attempts: number
   expires_at: string
   created_at: string
 }
@@ -57,6 +60,32 @@ type AttemptRecord = {
   score: number | null
   result: { passed?: boolean | null } | null
   submitted_at: string | null
+}
+
+type DeliveryRecord = {
+  id: string
+  application_id: string
+  aptitude_invitation_id: string | null
+  email_type: string
+  recipient_email: string
+  status: string
+  last_error_code: string | null
+  created_at: string
+}
+
+type AssessmentReviewRecord = {
+  id: string
+  application_id: string
+  attempt_id: string
+  review_status: 'pending' | 'cleared' | 'overridden'
+  reason: string
+}
+
+type WorkflowFailureRecord = {
+  id: string
+  application_id: string
+  failure_code: string
+  created_at: string
 }
 
 const questionTypes = [
@@ -76,6 +105,10 @@ function parseAnswerLines(value: string) {
     .filter(Boolean)
 }
 
+function parseTags(value: string) {
+  return [...new Set(parseAnswerLines(value).map((tag) => tag.toLowerCase()))]
+}
+
 export default function Aptitude() {
   const { user } = useAuth()
   const {
@@ -89,6 +122,9 @@ export default function Aptitude() {
   const [questions, setQuestions] = useState<QuestionRecord[]>([])
   const [invitations, setInvitations] = useState<InvitationRecord[]>([])
   const [attempts, setAttempts] = useState<AttemptRecord[]>([])
+  const [deliveryJobs, setDeliveryJobs] = useState<DeliveryRecord[]>([])
+  const [assessmentReviews, setAssessmentReviews] = useState<AssessmentReviewRecord[]>([])
+  const [workflowFailures, setWorkflowFailures] = useState<WorkflowFailureRecord[]>([])
   const [selectedTestId, setSelectedTestId] = useState('')
   const [selectedVersionId, setSelectedVersionId] = useState('')
   const [selectedApplicationId, setSelectedApplicationId] = useState('')
@@ -102,12 +138,24 @@ export default function Aptitude() {
   const [questionPrompt, setQuestionPrompt] = useState('')
   const [questionPoints, setQuestionPoints] = useState('1')
   const [questionCategory, setQuestionCategory] = useState('general')
+  const [questionRoles, setQuestionRoles] = useState('general')
+  const [questionCompetencies, setQuestionCompetencies] = useState('')
   const [questionDifficulty, setQuestionDifficulty] =
     useState<QuestionRecord['difficulty']>('medium')
   const [optionsText, setOptionsText] = useState('')
   const [answerText, setAnswerText] = useState('')
   const [inviteURL, setInviteURL] = useState('')
   const [inviteRecipient, setInviteRecipient] = useState('')
+  const [jobRole, setJobRole] = useState('general')
+  const [jobCompetencies, setJobCompetencies] = useState('')
+  const [jobCategories, setJobCategories] = useState('')
+  const [questionCount, setQuestionCount] = useState('')
+  const [difficultyCounts, setDifficultyCounts] = useState({
+    beginner: '0',
+    medium: '0',
+    advanced: '0',
+    expert: '0',
+  })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
@@ -138,6 +186,10 @@ export default function Aptitude() {
     }
     return grouped
   }, [attempts])
+  const reviewByAttempt = useMemo(
+    () => new Map(assessmentReviews.map((review) => [review.attempt_id, review])),
+    [assessmentReviews],
+  )
 
   const loadTests = useCallback(async () => {
     if (!supabase || !workspaceId) {
@@ -161,12 +213,15 @@ export default function Aptitude() {
     if (!supabase || !workspaceId) {
       setInvitations([])
       setAttempts([])
+      setDeliveryJobs([])
+      setAssessmentReviews([])
+      setWorkflowFailures([])
       return
     }
     const { data, error: invitationError } = await supabase
       .from('aptitude_invitations')
       .select(
-        'id, application_id, test_version_id, candidate_email, status, email_status, email_error_code, expires_at, created_at',
+        'id, application_id, test_version_id, candidate_email, status, email_status, email_error_code, max_attempts, expires_at, created_at',
       )
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })
@@ -174,6 +229,30 @@ export default function Aptitude() {
     if (invitationError) throw invitationError
     const records = (data ?? []) as InvitationRecord[]
     setInvitations(records)
+    const { data: deliveryData, error: deliveryError } = await supabase
+      .from('email_delivery_jobs')
+      .select('id, application_id, aptitude_invitation_id, email_type, recipient_email, status, last_error_code, created_at')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (deliveryError) throw deliveryError
+    setDeliveryJobs((deliveryData ?? []) as DeliveryRecord[])
+    const { data: reviewData, error: reviewError } = await supabase
+      .from('application_assessment_reviews')
+      .select('id, application_id, attempt_id, review_status, reason')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (reviewError) throw reviewError
+    setAssessmentReviews((reviewData ?? []) as AssessmentReviewRecord[])
+    const { data: failureData, error: failureError } = await supabase
+      .from('application_workflow_failures')
+      .select('id, application_id, failure_code, created_at')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    if (failureError) throw failureError
+    setWorkflowFailures((failureData ?? []) as WorkflowFailureRecord[])
     if (records.length === 0) {
       setAttempts([])
       return
@@ -225,7 +304,7 @@ export default function Aptitude() {
     }
     const { data, error: questionError } = await supabase
       .from('aptitude_questions')
-      .select('id, display_order, question_type, prompt, points, category, difficulty')
+      .select('id, display_order, question_type, prompt, points, category, difficulty, job_roles, competencies')
       .eq('workspace_id', workspaceId)
       .eq('test_version_id', selectedVersionId)
       .order('display_order', { ascending: true })
@@ -404,6 +483,13 @@ export default function Aptitude() {
       answerKey = { option_ids: [] }
     }
 
+    const roles = parseTags(questionRoles)
+    const competencies = parseTags(questionCompetencies)
+    if (roles.length === 0 || roles.length > 20 || competencies.length > 50) {
+      setError('Add between 1 and 20 job roles and no more than 50 competencies.')
+      return
+    }
+
     setBusy(true)
     setError('')
     setSuccess('')
@@ -419,8 +505,12 @@ export default function Aptitude() {
           question_type: questionType,
           prompt: questionPrompt.trim(),
           points: Number(questionPoints),
-          category: questionCategory.trim(),
+          category: questionCategory.trim().toLowerCase(),
           difficulty: questionDifficulty,
+          job_roles: roles,
+          competencies,
+          is_active: true,
+          approval_status: 'approved',
         })
         .select('id')
         .single()
@@ -470,6 +560,8 @@ export default function Aptitude() {
       setOptionsText('')
       setAnswerText('')
       setQuestionCategory('general')
+      setQuestionRoles('general')
+      setQuestionCompetencies('')
       setQuestionDifficulty('medium')
       setSuccess('Question and private answer key saved.')
       await loadQuestions()
@@ -544,6 +636,32 @@ export default function Aptitude() {
       setError('Select an application to invite.')
       return
     }
+    const targetCount = questionCount.trim() ? Number(questionCount) : null
+    const distribution = {
+      beginner: Number(difficultyCounts.beginner),
+      medium: Number(difficultyCounts.medium),
+      advanced: Number(difficultyCounts.advanced),
+      expert: Number(difficultyCounts.expert),
+    }
+    const distributionTotal = Object.values(distribution).reduce(
+      (total, count) => total + count,
+      0,
+    )
+    if (
+      Object.values(distribution).some((count) => !Number.isInteger(count) || count < 0) ||
+      (targetCount !== null &&
+        (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 1000 ||
+          distributionTotal !== targetCount)) ||
+      (targetCount === null && distributionTotal !== 0)
+    ) {
+      setError('Set a question count and difficulty quotas that add up to that count, or leave all quotas at zero to use every matching question.')
+      return
+    }
+    const normalizedRole = jobRole.trim().toLowerCase()
+    if (!normalizedRole) {
+      setError('Enter the job role used to select aptitude questions.')
+      return
+    }
     setBusy(true)
     setError('')
     setSuccess('')
@@ -555,6 +673,25 @@ export default function Aptitude() {
       if (!sessionData.session?.access_token) {
         throw new Error('Sign in again before creating a candidate invitation.')
       }
+      if (!supabase) throw new Error('Aptitude services are unavailable.')
+      const { error: configurationError } = await supabase
+        .from('job_aptitude_assessments')
+        .upsert(
+          {
+            workspace_id: workspaceId,
+            job_id: application.job_id,
+            test_version_id: selectedVersion.id,
+            is_required: true,
+            job_role: normalizedRole,
+            competencies: parseTags(jobCompetencies),
+            categories: parseTags(jobCategories),
+            question_count: targetCount,
+            difficulty_distribution: distribution,
+            created_by: user?.id ?? null,
+          },
+          { onConflict: 'workspace_id,job_id,test_version_id' },
+        )
+      if (configurationError) throw configurationError
       const response = await createAptitudeInvitation(
         {
           workspace_id: workspaceId,
@@ -568,7 +705,7 @@ export default function Aptitude() {
       setInviteRecipient(response.invitation.candidate_email)
       setInviteURL(`${window.location.origin}/aptitude/${response.token}`)
       setSelectedApplicationId('')
-      setSuccess('Invitation created. Copy the link and send it manually; no email was sent.')
+      setSuccess('Invitation created. The assessment email is queued for delivery. Keep the link as a fallback.')
       await loadInvitations()
     } catch (caughtError) {
       setError(getErrorMessage(caughtError, 'The aptitude invitation could not be created.'))
@@ -580,6 +717,99 @@ export default function Aptitude() {
   async function publishOrReload() {
     setBusy(true)
     await publishVersion()
+  }
+
+  async function actOnEmailDelivery(
+    job: DeliveryRecord,
+    action: 'send' | 'retry' | 'resend',
+  ) {
+    if (!supabase || !workspaceId) {
+      setError('Email delivery controls are unavailable.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession()
+      if (sessionError) throw sessionError
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) {
+        throw new Error('Sign in again before managing email delivery.')
+      }
+      await requestEmailDeliveryAction(
+        job.id,
+        { workspace_id: workspaceId, action, request_id: crypto.randomUUID() },
+        accessToken,
+      )
+      setSuccess(
+        action === 'resend'
+          ? 'A resend was queued.'
+          : action === 'retry'
+            ? 'The email retry was queued.'
+            : 'The email was returned to the delivery queue.',
+      )
+      await loadInvitations()
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError, 'The email delivery action failed.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function resolveAssessmentReview(
+    review: AssessmentReviewRecord,
+    resolution: 'cleared' | 'overridden',
+  ) {
+    if (!supabase || !workspaceId) return
+    setBusy(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { error: resolveError } = await supabase.rpc(
+        'resolve_application_assessment_review',
+        {
+          target_workspace_id: workspaceId,
+          target_review_id: review.id,
+          target_resolution: resolution,
+        },
+      )
+      if (resolveError) throw resolveError
+      setSuccess(
+        resolution === 'overridden'
+          ? 'The application was advanced to interview by recruiter override.'
+          : 'The aptitude result was reviewed and cleared.',
+      )
+      await Promise.all([loadInvitations(), reload()])
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError, 'The aptitude review could not be updated.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function grantAnotherAttempt(invitation: InvitationRecord) {
+    if (!supabase || !workspaceId) return
+    setBusy(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { error: reinvitationError } = await supabase.rpc(
+        'grant_aptitude_reinvitation',
+        {
+          target_workspace_id: workspaceId,
+          target_invitation_id: invitation.id,
+        },
+      )
+      if (reinvitationError) throw reinvitationError
+      setSuccess('One additional attempt was authorized and a new invitation email was queued.')
+      await loadInvitations()
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError, 'The additional attempt could not be authorized.'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -604,7 +834,7 @@ export default function Aptitude() {
         <div className="form-alert form-alert-error" role="alert">
           {error || applicationsError}
           {error.includes('aptitude') && (
-            <> Apply migrations 202610290003 and 202610290007 to your local/test database.</>
+            <> Apply the required aptitude migrations through 202611030002_score_aptitude_timeouts.sql to your local/test database.</>
           )}
         </div>
       )}
@@ -613,7 +843,7 @@ export default function Aptitude() {
       <div className="info-banner">
         <Clipboard size={18} />
         <div>
-          <strong>Answer keys stay private; test invitations require manual delivery</strong>
+          <strong>Answer keys stay private; invitations are delivered by the backend email worker</strong>
           <p>
             Candidate responses are scored by the backend. This workspace does not
             send email yet: copy the generated one-time link and deliver it using
@@ -799,6 +1029,23 @@ export default function Aptitude() {
                     </select>
                   </label>
                   <label>
+                    Job roles (one per line; use "general" for shared questions)
+                    <textarea
+                      className="form-textarea"
+                      required
+                      value={questionRoles}
+                      onChange={(event) => setQuestionRoles(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Competencies (one per line; leave blank for any competency)
+                    <textarea
+                      className="form-textarea"
+                      value={questionCompetencies}
+                      onChange={(event) => setQuestionCompetencies(event.target.value)}
+                    />
+                  </label>
+                  <label>
                     Type
                     <select
                       className="form-select"
@@ -858,6 +1105,9 @@ export default function Aptitude() {
                       {questionTypes.find((type) => type.value === question.question_type)?.label}
                       {' · '}{question.category}
                       {' · '}{question.difficulty}
+                      {' · '}{question.job_roles.join(', ')}
+                      {question.competencies.length > 0 &&
+                        ` · ${question.competencies.join(', ')}`}
                       {' · '}{question.points} point(s)
                     </p>
                     {question.options.length > 0 && (
@@ -920,6 +1170,63 @@ export default function Aptitude() {
               ))}
             </select>
           </label>
+          <div className="aptitude-settings-grid">
+            <label>
+              Job role
+              <input
+                className="form-input"
+                required
+                maxLength={120}
+                value={jobRole}
+                onChange={(event) => setJobRole(event.target.value)}
+              />
+            </label>
+            <label>
+              Competencies to match (one per line; optional)
+              <textarea
+                className="form-textarea"
+                value={jobCompetencies}
+                onChange={(event) => setJobCompetencies(event.target.value)}
+              />
+            </label>
+            <label>
+              Categories to include (one per line; optional)
+              <textarea
+                className="form-textarea"
+                value={jobCategories}
+                onChange={(event) => setJobCategories(event.target.value)}
+              />
+            </label>
+            <label>
+              Number of questions (optional)
+              <input
+                className="form-input"
+                type="number"
+                min="1"
+                max="1000"
+                value={questionCount}
+                onChange={(event) => setQuestionCount(event.target.value)}
+              />
+            </label>
+            {(Object.keys(difficultyCounts) as Array<keyof typeof difficultyCounts>).map((difficulty) => (
+              <label key={difficulty}>
+                {difficulty[0].toUpperCase() + difficulty.slice(1)} questions
+                <input
+                  className="form-input"
+                  type="number"
+                  min="0"
+                  max="1000"
+                  value={difficultyCounts[difficulty]}
+                  onChange={(event) =>
+                    setDifficultyCounts((current) => ({
+                      ...current,
+                      [difficulty]: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
           <Button
             type="submit"
             icon={<Send size={16} />}
@@ -931,8 +1238,8 @@ export default function Aptitude() {
         </form>
         {inviteURL && (
           <div className="aptitude-invite-link">
-            <strong>Manual delivery to {inviteRecipient}</strong>
-            <p>This link is shown only once. Copy and send it securely; do not post it publicly.</p>
+            <strong>Fallback link for {inviteRecipient}</strong>
+            <p>The backend has queued an invitation email. This one-time link is also available as a secure fallback.</p>
             <input className="form-input" readOnly value={inviteURL} aria-label="Candidate aptitude invitation link" />
             <Button
               variant="secondary"
@@ -946,6 +1253,87 @@ export default function Aptitude() {
             >
               Copy link
             </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="panel aptitude-authoring">
+        {workflowFailures.length > 0 && (
+          <section aria-labelledby="aptitude-workflow-failures">
+            <div className="recruitment-list-header">
+              <div>
+                <h2 id="aptitude-workflow-failures">Automated follow-up needs attention</h2>
+                <p>A screening pass could not create its aptitude invitation. Review the published assessment configuration and question bank.</p>
+              </div>
+            </div>
+            <div className="aptitude-results-list">
+              {workflowFailures.map((failure) => {
+                const application = applicationById.get(failure.application_id)
+                return (
+                  <article className="aptitude-result-card" key={failure.id}>
+                    <div>
+                      <strong>{application?.candidates?.full_name ?? 'Candidate'}</strong>
+                      <p>{application?.jobs?.title ?? 'Application'} · {failure.failure_code}</p>
+                      <small>{new Date(failure.created_at).toLocaleString()}</small>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        )}
+        <div className="recruitment-list-header">
+          <div>
+            <h2>Email delivery</h2>
+            <p>Track screening and assessment notices, then retry or resend without creating another invitation.</p>
+          </div>
+          <Button variant="secondary" onClick={() => void loadInvitations()}>
+            Refresh delivery
+          </Button>
+        </div>
+        {deliveryJobs.length === 0 ? (
+          <div className="empty-state"><p>No email delivery records are available.</p></div>
+        ) : (
+          <div className="aptitude-results-list">
+            {deliveryJobs.map((job) => {
+              const application = applicationById.get(job.application_id)
+              const action =
+                job.status === 'queued'
+                  ? 'send'
+                  : job.status === 'retry_wait' ||
+                      job.status === 'failed' ||
+                      job.status === 'blocked_configuration'
+                    ? 'retry'
+                    : job.status === 'sent' || job.status === 'delivered'
+                      ? 'resend'
+                      : null
+              return (
+                <article className="aptitude-result-card" key={job.id}>
+                  <div>
+                    <strong>{application?.candidates?.full_name ?? job.recipient_email}</strong>
+                    <p>
+                      {job.email_type.replaceAll('_', ' ')} · {job.status}
+                      {job.last_error_code ? ` · ${job.last_error_code}` : ''}
+                    </p>
+                    <small>{new Date(job.created_at).toLocaleString()}</small>
+                  </div>
+                  {action && (
+                    <Button
+                      variant="secondary"
+                      icon={action === 'send' ? <Send size={15} /> : <RefreshCw size={15} />}
+                      loading={busy}
+                      onClick={() => void actOnEmailDelivery(job, action)}
+                    >
+                      {action === 'send'
+                        ? 'Send now'
+                        : action === 'retry'
+                          ? 'Retry'
+                          : 'Resend'}
+                    </Button>
+                  )}
+                </article>
+              )
+            })}
           </div>
         )}
       </div>
@@ -966,6 +1354,7 @@ export default function Aptitude() {
               const application = applicationById.get(invitation.application_id)
               const version = versionById.get(invitation.test_version_id)
               const invitationAttempts = attemptsByInvitation.get(invitation.id) ?? []
+              const latestAttempt = invitationAttempts[invitationAttempts.length - 1]
               return (
                 <article className="aptitude-result-card" key={invitation.id}>
                   <div>
@@ -978,22 +1367,54 @@ export default function Aptitude() {
                   </div>
                   <div>
                     {invitationAttempts.map((attempt) => {
+                      const review = reviewByAttempt.get(attempt.id)
                       const recommendation =
                         attempt.result?.passed === true
-                          ? 'Threshold met; recruiter may consider interview review.'
+                          ? 'Threshold met; application advances to interview.'
                           : attempt.result?.passed === false
-                            ? 'Below threshold; recruiter review is required.'
+                            ? 'Below threshold; recruiter review is pending.'
                             : ''
                       return (
-                        <p key={attempt.id}>
-                          Attempt {attempt.attempt_number}: {attempt.status}
-                          {attempt.score != null ? ` · ${Number(attempt.score).toFixed(1)}%` : ''}
-                          {attempt.result?.passed === true ? ' · Pass' : ''}
-                          {attempt.result?.passed === false ? ' · Below threshold' : ''}
-                          {recommendation && <> · {recommendation} Application stage was not changed.</>}
-                        </p>
+                        <div key={attempt.id}>
+                          <p>
+                            Attempt {attempt.attempt_number}: {attempt.status}
+                            {attempt.score != null ? ` · ${Number(attempt.score).toFixed(1)}%` : ''}
+                            {attempt.result?.passed === true ? ' · Pass' : ''}
+                            {attempt.result?.passed === false ? ' · Below threshold' : ''}
+                            {recommendation && <> · {recommendation}</>}
+                          </p>
+                          {review?.review_status === 'pending' && (
+                            <div className="aptitude-builder-controls">
+                              <Button
+                                variant="secondary"
+                                loading={busy}
+                                onClick={() => void resolveAssessmentReview(review, 'overridden')}
+                              >
+                                Advance to interview
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                loading={busy}
+                                onClick={() => void resolveAssessmentReview(review, 'cleared')}
+                              >
+                                Clear for review
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       )
                     })}
+                    {latestAttempt?.result?.passed === false &&
+                      version &&
+                      invitation.max_attempts < version.max_attempts && (
+                        <Button
+                          variant="secondary"
+                          loading={busy}
+                          onClick={() => void grantAnotherAttempt(invitation)}
+                        >
+                          Allow one additional attempt
+                        </Button>
+                      )}
                     {invitationAttempts.length === 0 && <span>Awaiting candidate</span>}
                   </div>
                 </article>

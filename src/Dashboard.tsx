@@ -161,9 +161,9 @@ export default function Dashboard() {
 
         client
           .from('applications')
-          .select(
-            'id, status, applied_at, created_at, candidates(full_name, email), jobs(title)',
-          )
+.select(
+  'id, status, applied_at, created_at, candidates!applications_candidate_id_fkey(full_name, email), jobs!applications_job_id_fkey(title)',
+)
           .eq('workspace_id', workspaceId)
           .order('applied_at', { ascending: false, nullsFirst: false })
           .order('created_at', { ascending: false })
