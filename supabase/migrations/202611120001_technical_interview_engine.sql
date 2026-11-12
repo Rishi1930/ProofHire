@@ -293,11 +293,13 @@ grant all on public.interview_code_drafts to service_role;
 grant all on public.interview_code_submissions to service_role;
 grant all on public.interview_proctor_events to service_role;
 
+drop policy if exists "Members can read interview questions" on public.interview_questions;
 create policy "Members can read interview questions"
   on public.interview_questions for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Recruiters can create interview questions" on public.interview_questions;
 create policy "Recruiters can create interview questions"
   on public.interview_questions for insert
   to authenticated
@@ -306,47 +308,56 @@ create policy "Recruiters can create interview questions"
     and created_by = auth.uid()
   );
 
+drop policy if exists "Recruiters can update interview questions" on public.interview_questions;
 create policy "Recruiters can update interview questions"
   on public.interview_questions for update
   to authenticated
   using (public.has_workspace_role(workspace_id, array['owner', 'admin', 'recruiter']))
   with check (public.has_workspace_role(workspace_id, array['owner', 'admin', 'recruiter']));
 
+drop policy if exists "Recruiters can delete interview questions" on public.interview_questions;
 create policy "Recruiters can delete interview questions"
   on public.interview_questions for delete
   to authenticated
   using (public.has_workspace_role(workspace_id, array['owner', 'admin', 'recruiter']));
 
+drop policy if exists "Members can read interview sessions" on public.interview_sessions;
 create policy "Members can read interview sessions"
   on public.interview_sessions for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Members can read session questions" on public.interview_session_questions;
 create policy "Members can read session questions"
   on public.interview_session_questions for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Members can read interview answers" on public.interview_answers;
 create policy "Members can read interview answers"
   on public.interview_answers for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Members can read session challenges" on public.interview_session_challenges;
 create policy "Members can read session challenges"
   on public.interview_session_challenges for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Members can read interview code drafts" on public.interview_code_drafts;
 create policy "Members can read interview code drafts"
   on public.interview_code_drafts for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Members can read interview code submissions" on public.interview_code_submissions;
 create policy "Members can read interview code submissions"
   on public.interview_code_submissions for select
   to authenticated
   using (public.is_workspace_member(workspace_id));
 
+drop policy if exists "Recruiters can read proctor events" on public.interview_proctor_events;
 create policy "Recruiters can read proctor events"
   on public.interview_proctor_events for select
   to authenticated
