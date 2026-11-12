@@ -283,7 +283,7 @@ func (worker *Worker) claim(ctx context.Context, workerID string) (*screeningJob
 
 func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error {
 	applications, err := worker.selectRows(ctx, "applications", url.Values{
-		"select": {"id,workspace_id,job_id,candidate_id,resume_path,resume_profile"},
+		"select": {"*"},
 		"id":     {"eq." + queueJob.ApplicationID},
 		"limit":  {"1"},
 	})
