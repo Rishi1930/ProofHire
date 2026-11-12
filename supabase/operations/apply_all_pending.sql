@@ -3,7 +3,6 @@
 -- Generated from:
 --   supabase/migrations/202611120002_email_delivery_runtime.sql
 --   supabase/migrations/202611120003_resume_profile_submission.sql
---   supabase/migrations/202611120004_harden_interview_rpc_grants.sql
 --   supabase/migrations/202611120005_openings_and_pipeline_emails.sql
 --   supabase/operations/demo_interview_content.sql
 --
