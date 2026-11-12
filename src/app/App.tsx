@@ -25,7 +25,6 @@ const navigation = [
       { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
       { label: 'Jobs & Hiring', path: '/jobs', icon: BriefcaseBusiness },
       { label: 'Resume Screening', path: '/screening', icon: ClipboardCheck },
-      { label: 'Aptitude Tests', path: '/aptitude', icon: BrainCircuit },
       { label: 'Interviews', path: '/interviews', icon: CalendarDays },
       { label: 'Candidates', path: '/candidates', icon: Users },
       {
@@ -42,7 +41,7 @@ function getPageTitle(pathname: string) {
   if (pathname.startsWith('/jobs')) return 'Jobs & Hiring'
   if (pathname.startsWith('/applications')) return 'Applications'
   if (pathname.startsWith('/screening')) return 'Resume Screening'
-  if (pathname.startsWith('/aptitude')) return 'Aptitude Tests'
+  if (pathname.startsWith('/interviews/technical')) return 'Interview engine'
   if (pathname.startsWith('/interviews')) return 'Interviews'
   if (pathname.startsWith('/reports')) return 'Reports & Insights'
   if (pathname.startsWith('/candidates')) return 'Candidates'
@@ -60,6 +59,7 @@ export default function App() {
   const [signingOut, setSigningOut] = useState(false)
 
   const isPublicApplication = location.pathname.startsWith('/apply/')
+  const isCandidateInterview = location.pathname.startsWith('/interview/')
   const isAuthPage = [
     '/login',
     '/register',
@@ -67,11 +67,10 @@ export default function App() {
     '/reset-password',
   ].includes(location.pathname)
 
-  const isPublicAptitude = location.pathname.startsWith('/aptitude/')
   if (
     location.pathname === '/' ||
     isPublicApplication ||
-    isPublicAptitude ||
+    isCandidateInterview ||
     isAuthPage
   ) {
     return <Outlet />

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { CalendarDays, Plus, RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import Button from '../components/Button'
 import StatusBadge from '../components/StatusBadge'
@@ -204,6 +205,9 @@ export default function Interviews() {
           <span className="page-eyebrow">RECRUITER WORKFLOW</span>
           <h1>Interviews</h1>
           <p>Schedule interviews, track outcomes, and capture recruiter feedback.</p>
+          <Link className="text-link" to="/interviews/technical">
+            Open the technical interview engine →
+          </Link>
         </div>
         <Button
           variant="secondary"

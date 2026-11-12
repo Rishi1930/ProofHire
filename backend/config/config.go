@@ -32,7 +32,14 @@ type Config struct {
 	EmailFromAddress       string
 	EmailFromName          string
 	AppBaseURL             string
+	SMTPHost               string
+	SMTPPort               int
+	SMTPUsername           string
+	SMTPPassword           string
+	SMTPSecurity           string
 	ResumeOCREnabled       bool
+	CodeRunnerEnabled      bool
+	RunnerPrewarmLanguages []string
 	ScreeningConcurrency   int
 	ScreeningPollInterval  time.Duration
 }
@@ -69,8 +76,36 @@ func FromEnvironment() (Config, error) {
 		EmailFromAddress:       strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS")),
 		EmailFromName:          strings.TrimSpace(os.Getenv("EMAIL_FROM_NAME")),
 		AppBaseURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/"),
+		SMTPHost:               strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPUsername:           strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
+		SMTPPassword:           os.Getenv("SMTP_PASSWORD"),
+		SMTPSecurity:           strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_SECURITY"))),
+		CodeRunnerEnabled:      true,
 		ScreeningConcurrency:   1,
 		ScreeningPollInterval:  2 * time.Second,
+	}
+	if value := strings.TrimSpace(os.Getenv("CODE_RUNNER_ENABLED")); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("CODE_RUNNER_ENABLED must be a boolean")
+		}
+		config.CodeRunnerEnabled = enabled
+	}
+	if value := strings.TrimSpace(os.Getenv("RUNNER_PREWARM_LANGUAGES")); value != "" {
+		for _, name := range strings.Split(value, ",") {
+			trimmed := strings.ToLower(strings.TrimSpace(name))
+			if trimmed == "" {
+				continue
+			}
+			config.RunnerPrewarmLanguages = append(config.RunnerPrewarmLanguages, trimmed)
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("SMTP_PORT")); value != "" {
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return Config{}, fmt.Errorf("SMTP_PORT must be a valid port number")
+		}
+		config.SMTPPort = port
 	}
 	if value := strings.TrimSpace(os.Getenv("RESUME_OCR_ENABLED")); value != "" {
 		enabled, err := strconv.ParseBool(value)
@@ -134,11 +169,34 @@ func (config Config) ValidateEmail() error {
 		config.AppBaseURL == "" {
 		return fmt.Errorf("email delivery is not configured")
 	}
-	if !strings.EqualFold(config.EmailProvider, "resend") {
-		return fmt.Errorf("EMAIL_PROVIDER must be resend")
-	}
-	if config.EmailAPIKey == "" {
-		return fmt.Errorf("EMAIL_API_KEY is required")
+	switch strings.ToLower(config.EmailProvider) {
+	case "smtp":
+		if config.SMTPHost == "" {
+			return fmt.Errorf("SMTP_HOST is required for the smtp provider")
+		}
+		if config.SMTPPort < 1 || config.SMTPPort > 65535 {
+			return fmt.Errorf("SMTP_PORT must be a valid port number")
+		}
+		switch config.SMTPSecurity {
+		case "", "starttls", "tls", "none":
+		default:
+			return fmt.Errorf("SMTP_SECURITY must be starttls, tls or none")
+		}
+		if (config.SMTPUsername == "") != (config.SMTPPassword == "") {
+			return fmt.Errorf("SMTP_USERNAME and SMTP_PASSWORD must be set together")
+		}
+		if config.SMTPSecurity == "tls" && config.SMTPPort == 0 {
+			return fmt.Errorf("SMTP_PORT is required")
+		}
+	case "resend":
+		if config.EmailAPIKey == "" {
+			return fmt.Errorf("EMAIL_API_KEY is required")
+		}
+		if err := validatePublicHTTPSURL(config.AppBaseURL, "APP_BASE_URL"); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("EMAIL_PROVIDER must be smtp or resend")
 	}
 	if !validEmailAddress(config.EmailFromAddress) {
 		return fmt.Errorf("EMAIL_FROM_ADDRESS must be a valid email address")
@@ -146,7 +204,7 @@ func (config Config) ValidateEmail() error {
 	if config.EmailFromName == "" || len(config.EmailFromName) > 120 {
 		return fmt.Errorf("EMAIL_FROM_NAME must contain 1 to 120 characters")
 	}
-	return validatePublicHTTPSURL(config.AppBaseURL, "APP_BASE_URL")
+	return nil
 }
 
 func validatePublicHTTPSURL(value, name string) error {

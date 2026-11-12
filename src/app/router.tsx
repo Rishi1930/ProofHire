@@ -11,8 +11,6 @@ const Dashboard = lazy(() => import('../Dashboard'))
 const Jobs = lazy(() => import('../jobs/Jobs'))
 const Applications = lazy(() => import('../applications/Applications'))
 const Screening = lazy(() => import('../recruitment/Screening'))
-const Aptitude = lazy(() => import('../aptitude/Aptitude'))
-const CandidateAptitude = lazy(() => import('../aptitude/CandidateAssessment'))
 const Interviews = lazy(() => import('../recruitment/Interviews'))
 const Reports = lazy(() => import('../recruitment/Reports'))
 const PublicApplication = lazy(
@@ -22,6 +20,8 @@ const Candidates = lazy(() => import('../candidates/Candidates'))
 const Settings = lazy(() => import('../settings/Settings'))
 const Notifications = lazy(() => import('../notifications/Notifications'))
 const LandingPage = lazy(() => import('../landing/LandingPage'))
+const InterviewWorkspace = lazy(() => import('../interviews/InterviewWorkspace'))
+const CandidateInterview = lazy(() => import('../interviews/CandidateInterview'))
 
 function RouteLoading() {
   return (
@@ -59,14 +59,24 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: 'aptitude/:token',
+        path: 'interview/:token',
         element: (
           <Suspense fallback={<RouteLoading />}>
-            <CandidateAptitude />
+            <CandidateInterview />
           </Suspense>
         ),
       },
 
+      {
+        path: 'interviews/technical',
+        element: (
+          <ProtectedRoute>
+            <Suspense fallback={<RouteLoading />}>
+              <InterviewWorkspace />
+            </Suspense>
+          </ProtectedRoute>
+        ),
+      },
       {
         path: 'dashboard',
         element: (
@@ -113,16 +123,6 @@ export const router = createBrowserRouter([
           <ProtectedRoute>
             <Suspense fallback={<RouteLoading />}>
               <Screening />
-            </Suspense>
-          </ProtectedRoute>
-        ),
-      },
-      {
-        path: 'aptitude',
-        element: (
-          <ProtectedRoute>
-            <Suspense fallback={<RouteLoading />}>
-              <Aptitude />
             </Suspense>
           </ProtectedRoute>
         ),

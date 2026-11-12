@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -25,23 +24,18 @@ type deliveryJob struct {
 	LeaseToken     string `json:"lease_token"`
 }
 
-type aptitudeDeliveryContext struct {
-	CandidateName string    `json:"candidate_name"`
-	JobTitle      string    `json:"job_title"`
-	CompanyName   string    `json:"company_name"`
-	Duration      int       `json:"duration_seconds"`
-	QuestionCount int       `json:"question_count"`
-	Deadline      time.Time `json:"deadline"`
-	AssessmentURL string    `json:"assessment_url"`
-	Passed        bool      `json:"passed"`
-	Token         string    `json:"token"`
+type deliveryContext struct {
+	CandidateName string `json:"candidate_name"`
+	JobTitle      string `json:"job_title"`
+	CompanyName   string `json:"company_name"`
+	Passed        bool   `json:"passed"`
 }
 
 type Worker struct {
 	baseURL    string
 	serviceKey string
 	credential config.SupabaseCredentialType
-	provider   *Client
+	provider   Sender
 	httpClient *http.Client
 	logger     *slog.Logger
 	workerID   string
@@ -74,15 +68,26 @@ func NewWorker(environment config.Config, logger *slog.Logger) (*Worker, error) 
 		appBaseURL: strings.TrimRight(environment.AppBaseURL, "/"),
 	}
 	if err := environment.ValidateEmail(); err == nil {
-		provider, providerErr := NewClient(
-			environment.EmailAPIKey,
-			environment.EmailFromName+" <"+environment.EmailFromAddress+">",
-		)
-		if providerErr != nil {
-			worker.logger.Warn("email delivery is disabled", "reason", providerErr.Error())
+		var sender Sender
+		if strings.EqualFold(environment.EmailProvider, "smtp") {
+			smtpSender, smtpErr := NewSMTPSender(environment)
+			if smtpErr != nil {
+				worker.logger.Warn("email delivery is disabled", "reason", smtpErr.Error())
+			} else {
+				sender = smtpSender
+			}
 		} else {
-			worker.provider = provider
+			provider, providerErr := NewClient(
+				environment.EmailAPIKey,
+				environment.EmailFromName+" <"+environment.EmailFromAddress+">",
+			)
+			if providerErr != nil {
+				worker.logger.Warn("email delivery is disabled", "reason", providerErr.Error())
+			} else {
+				sender = provider
+			}
 		}
+		worker.provider = sender
 	} else {
 		worker.logger.Warn("email delivery is disabled", "reason", err.Error())
 	}
@@ -96,9 +101,6 @@ func (worker *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(worker.pollEvery)
 	defer ticker.Stop()
 	for {
-		if err := worker.call(ctx, "finalize_expired_aptitude_attempts", map[string]any{}, nil); err != nil {
-			worker.logger.Error("expired aptitude attempts could not be finalized", "error", err)
-		}
 		if worker.provider != nil {
 			if err := worker.deliverOne(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				worker.logger.Error("email delivery job failed", "error", err)
@@ -135,40 +137,23 @@ func (worker *Worker) deliverOne(ctx context.Context) error {
 		return nil
 	}
 	job := jobs[0]
-	if job.EmailType != "aptitude_invitation" && job.EmailType != "screening_result" {
+	if job.EmailType != "screening_result" {
 		return worker.fail(ctx, job, "unsupported_email_type", false)
 	}
 
-	var data aptitudeDeliveryContext
+	var data deliveryContext
 	if err := worker.call(ctx, "get_email_delivery_context", map[string]any{
 		"target_job_id":      job.ID,
 		"target_lease_token": job.LeaseToken,
 	}, &data); err != nil {
 		return worker.fail(ctx, job, "email_context_unavailable", true)
 	}
-	var rendered Rendered
-	var err error
-	if job.EmailType == "aptitude_invitation" {
-		if data.Token == "" || worker.appBaseURL == "" {
-			return worker.fail(ctx, job, "email_context_invalid", false)
-		}
-		rendered, err = RenderAptitudeInvitation(AptitudeInvitation{
-			CandidateName: data.CandidateName,
-			JobTitle:      data.JobTitle,
-			CompanyName:   data.CompanyName,
-			Duration:      time.Duration(data.Duration) * time.Second,
-			QuestionCount: data.QuestionCount,
-			Deadline:      data.Deadline,
-			AssessmentURL: worker.appBaseURL + "/aptitude/" + url.PathEscape(data.Token),
-		})
-	} else {
-		rendered, err = RenderScreeningResult(ScreeningResult{
-			CandidateName: data.CandidateName,
-			JobTitle:      data.JobTitle,
-			CompanyName:   data.CompanyName,
-			Passed:        data.Passed,
-		})
-	}
+	rendered, err := RenderScreeningResult(ScreeningResult{
+		CandidateName: data.CandidateName,
+		JobTitle:      data.JobTitle,
+		CompanyName:   data.CompanyName,
+		Passed:        data.Passed,
+	})
 	if err != nil {
 		return worker.fail(ctx, job, "email_context_invalid", false)
 	}

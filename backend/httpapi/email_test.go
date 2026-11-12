@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -28,7 +29,6 @@ func TestEmailDeliveryActionRequiresRecruiterAndForwardsRequest(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{ID: userID}, nil
 		}),
-		nil,
 		queue,
 		"",
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -71,7 +71,6 @@ func TestResendWebhookRecordsVerifiedDeliveryEvent(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{}, errors.New("authentication is not used")
 		}),
-		nil,
 		queue,
 		secret,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -106,7 +105,6 @@ func TestResendWebhookRejectsInvalidSignature(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{}, errors.New("authentication is not used")
 		}),
-		nil,
 		queue,
 		"whsec_"+base64.StdEncoding.EncodeToString([]byte("webhook-secret-for-test")),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -126,4 +124,30 @@ func TestResendWebhookRejectsInvalidSignature(t *testing.T) {
 	if response.Code != http.StatusUnauthorized || len(queue.eventArgs) != 0 {
 		t.Fatalf("invalid webhook was not rejected: status=%d events=%#v", response.Code, queue.eventArgs)
 	}
+}
+
+type fakeEmailQueueService struct {
+	actionArgs []string
+	eventArgs  []string
+}
+
+func (service *fakeEmailQueueService) RequestAction(
+	_ context.Context,
+	userID string,
+	workspaceID string,
+	jobID string,
+	action string,
+	requestID string,
+) (json.RawMessage, error) {
+	service.actionArgs = []string{userID, workspaceID, jobID, action, requestID}
+	return json.RawMessage(`{"id":"job-id","status":"queued"}`), nil
+}
+
+func (service *fakeEmailQueueService) RecordProviderEvent(
+	_ context.Context,
+	messageID string,
+	eventType string,
+) error {
+	service.eventArgs = []string{messageID, eventType}
+	return nil
 }

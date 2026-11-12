@@ -10,7 +10,9 @@ import (
 
 	"github.com/rishi1930/proofhire/backend/config"
 	"github.com/rishi1930/proofhire/backend/email"
+	"github.com/rishi1930/proofhire/backend/interview"
 	"github.com/rishi1930/proofhire/backend/resume"
+	"github.com/rishi1930/proofhire/backend/runner"
 	"github.com/rishi1930/proofhire/backend/screening"
 )
 
@@ -46,6 +48,27 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if environment.CodeRunnerEnabled {
+		codeRunner := runner.NewEngine()
+		if len(environment.RunnerPrewarmLanguages) > 0 {
+			if err := codeRunner.Prewarm(ctx, environment.RunnerPrewarmLanguages); err != nil {
+				logger.Error("code runner images could not be prepared", "error", err)
+			}
+		}
+		interviewWorker, err := interview.NewWorker(environment, codeRunner, logger)
+		if err != nil {
+			logger.Error("interview evaluation worker could not start", "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := interviewWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("interview evaluation worker stopped unexpectedly", "error", err)
+				stop()
+			}
+		}()
+	}
+
 	go func() {
 		if err := emailWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("email worker stopped unexpectedly", "error", err)
@@ -53,7 +76,7 @@ func main() {
 		}
 	}()
 	logger.Info(
-		"screening and email workers started",
+		"screening, email and interview workers started",
 		"engine", "proofhire-deterministic-1",
 		"concurrency", environment.ScreeningConcurrency,
 		"poll_interval", environment.ScreeningPollInterval.String(),

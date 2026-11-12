@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/rishi1930/proofhire/backend/aptitude"
 	"github.com/rishi1930/proofhire/backend/config"
 	"github.com/rishi1930/proofhire/backend/email"
 	"github.com/rishi1930/proofhire/backend/supabaseauth"
@@ -28,20 +27,9 @@ type accessVerifier interface {
 
 type apiHandler struct {
 	verifier            accessVerifier
-	aptitude            aptitudeService
 	emailQueue          emailQueueService
 	resendWebhookSecret string
 	logger              *slog.Logger
-}
-
-type aptitudeService interface {
-	CreateInvitation(context.Context, aptitude.InvitationInput) (aptitude.Invitation, string, error)
-	CandidateSession(context.Context, string) (json.RawMessage, error)
-	StartAttempt(context.Context, string) (json.RawMessage, error)
-	SaveAnswer(context.Context, string, string, string, json.RawMessage) error
-	SaveProgress(context.Context, string, string, string, int, json.RawMessage) error
-	SubmitAttempt(context.Context, string, string) (json.RawMessage, error)
-	RecordEvent(context.Context, string, string, string, json.RawMessage) error
 }
 
 type emailQueueService interface {
@@ -57,29 +45,11 @@ type emailQueueService interface {
 }
 
 func NewHandler(verifier accessVerifier, logger *slog.Logger) http.Handler {
-	return NewHandlerWithAptitude(verifier, nil, logger)
-}
-
-func NewHandlerWithAptitude(
-	verifier accessVerifier,
-	aptitudeClient aptitudeService,
-	logger *slog.Logger,
-) http.Handler {
-	return NewHandlerWithIntegrations(verifier, aptitudeClient, nil, "", logger)
-}
-
-func NewHandlerWithAptitudeAndEmail(
-	verifier accessVerifier,
-	aptitudeClient aptitudeService,
-	emailQueue emailQueueService,
-	logger *slog.Logger,
-) http.Handler {
-	return NewHandlerWithIntegrations(verifier, aptitudeClient, emailQueue, "", logger)
+	return NewHandlerWithIntegrations(verifier, nil, "", logger)
 }
 
 func NewHandlerWithIntegrations(
 	verifier accessVerifier,
-	aptitudeClient aptitudeService,
 	emailQueue emailQueueService,
 	webhookSecret string,
 	logger *slog.Logger,
@@ -89,7 +59,6 @@ func NewHandlerWithIntegrations(
 	}
 	handler := &apiHandler{
 		verifier:            verifier,
-		aptitude:            aptitudeClient,
 		emailQueue:          emailQueue,
 		resendWebhookSecret: webhookSecret,
 		logger:              logger,
@@ -98,13 +67,6 @@ func NewHandlerWithIntegrations(
 	mux.HandleFunc("GET /api/health", handler.health)
 	mux.HandleFunc("GET /api/v1/me", handler.currentUser)
 	mux.HandleFunc("GET /api/v1/workspace-access", handler.workspaceAccess)
-	mux.HandleFunc("POST /api/v1/aptitude/invitations", handler.createAptitudeInvitation)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/session", handler.getAptitudeCandidateSession)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/start", handler.startAptitudeCandidateAttempt)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/answer", handler.saveAptitudeCandidateAnswer)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/progress", handler.saveAptitudeCandidateProgress)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/submit", handler.submitAptitudeCandidateAttempt)
-	mux.HandleFunc("POST /api/v1/aptitude/candidate/event", handler.recordAptitudeCandidateEvent)
 	mux.HandleFunc("POST /api/v1/email-delivery/{jobID}/action", handler.requestEmailDeliveryAction)
 	mux.HandleFunc("POST /api/webhooks/resend", handler.resendWebhook)
 	return handler.withRequestID(mux)
@@ -115,14 +77,8 @@ func NewHandlerFromEnvironment(logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	var aptitudeClient aptitudeService
 	var emailQueueClient emailQueueService
 	if environment.SupabaseSecretKey != "" || environment.SupabaseServiceRoleKey != "" {
-		client, err := aptitude.NewClient(environment)
-		if err != nil {
-			return nil, err
-		}
-		aptitudeClient = client
 		queueClient, err := email.NewQueueClient(environment)
 		if err != nil {
 			return nil, err
@@ -131,7 +87,6 @@ func NewHandlerFromEnvironment(logger *slog.Logger) (http.Handler, error) {
 	}
 	return NewHandlerWithIntegrations(
 		supabaseauth.NewClient(environment),
-		aptitudeClient,
 		emailQueueClient,
 		environment.EmailWebhookSecret,
 		logger,

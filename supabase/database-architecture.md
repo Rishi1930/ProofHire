@@ -1,5 +1,13 @@
 # ProofHire database audit and architecture
 
+Product note (12 November 2026): the aptitude assessment module has been
+removed from the application — candidate assessment UI, recruiter authoring,
+Go endpoints and email templates are gone. The aptitude tables and RPCs
+described below are dormant schema left by the earlier bundle; they will be
+dropped once the technical interview module replaces them. Everything else in
+this document is still the reference for the recruitment, screening, interview
+and coding schema.
+
 Audit scope: repository files in this worktree on 2026-11-02. This is a
 repository audit, **not** a statement about the live Supabase project. No
 database was queried or changed.

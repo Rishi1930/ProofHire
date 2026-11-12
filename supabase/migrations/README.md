@@ -1,5 +1,10 @@
 # Supabase database setup
 
+> Product note (12 November 2026): aptitude assessments were removed from the
+> product. The aptitude migrations listed below are history and must not be
+> applied to a new environment. The live project needs only the three
+> aptitude-free migrations in `../operations/P0_RUNBOOK.md` right now.
+
 Run migrations in timestamp order from the Supabase SQL Editor or Supabase CLI.
 
 1. `202610240001_initial_schema.sql`

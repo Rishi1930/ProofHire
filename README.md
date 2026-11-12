@@ -31,28 +31,29 @@ requirements and job scoring settings, and includes the settings in queue
 fingerprints so requirement changes enqueue a fresh assessment. The owner
 provided a read-only schema inventory that confirmed the existing job key,
 screening tables, authorization functions, and absence of the new settings
-table/columns. The migration has not been applied or live-tested; configured
-Supabase REST requests still return HTTP 401.
+table/columns. The deterministic screening configuration migration has not yet been applied to
+the live project; see the live schema status below.
 Screening scores are review signals and do not automatically reject candidates
 or advance application stages.
 
-The aptitude workflow includes test authoring and publishing, manually
-delivered invitations, candidate sessions, autosaved answers, server-side
-scoring, and recruiter-facing results. Passing a configured threshold is only
-a recommendation; application stages are never changed automatically.
-Recruiters can schedule interviews and record outcomes and feedback.
+The technical interview engine replaces the former aptitude assessment, which
+has been removed from the product: the candidate assessment UI, the recruiter
+authoring workspace, the Go aptitude endpoints and the aptitude email templates
+are gone. An interview is now two server-timed phases in one session:
 
-The new database migrations add application-stage history, richer interview
-records, coding-assessment configuration and private submission/evaluation
-queues, email-delivery tracking, and an application-stage summary view. The Go
-backend now includes a Resend HTTP client and responsive, escaped HTML plus
-plain-text aptitude/interview invitation templates. They are **not yet wired
-to a transactional outbox worker or invitation workflow**; recorded emails
-remain manual-delivery records and no email is automatically sent. Coding
-submissions remain unevaluated until a trusted runner is added. Candidate
-interview invitation links, expiry/revocation management, the interview
-placeholder route, and automatic aptitude-to-interview progression are not
-implemented. Recruiter decisions remain human decisions.
+1. **Technical questions** — recruiter-authored per job, snapshotted into the
+   session, autosaved answer by answer.
+2. **Coding session** — one or more published coding challenges with sample
+   tests shown and hidden tests scored by the ProofHire runner.
+
+Candidates reach a session only through an opaque token that is hashed at rest
+and expires; they never receive table grants. Interview questions, answers,
+drafts, submissions and proctoring events are workspace-scoped under RLS. The
+full-screen requirement, tab/window signals, paste/copy signals and the
+server-side deadline are deterrents recorded in an audit trail, not proof of
+integrity. Question scores are awarded by recruiters; coding scores are
+deterministic test-case results. Resume screening remains deterministic and
+advisory, and recruiter decisions remain human decisions.
 
 ## Requirements
 
@@ -136,10 +137,8 @@ Worker settings include `SCREENING_WORKER_CONCURRENCY` (1–16),
 worker uses the selected privileged credential only server-side for queue
 claiming, private resume retrieval, and persistence; its SQL functions require
 the service role and apply lease/idempotency checks. The backend also uses its
-server-only privileged credential for aptitude candidate sessions, invitations,
-answer autosave, and scoring; the credential is never sent to the browser.
-Recruiter assessment reads and reprocess requests use Supabase authentication
-and RLS.
+server-only privileged credential only for the email delivery queue and
+webhook bookkeeping; the credential is never sent to the browser.
 
 The backend verifies access tokens against Supabase Auth. Its existing endpoints are:
 
@@ -147,56 +146,43 @@ The backend verifies access tokens against Supabase Auth. Its existing endpoints
 - `GET /api/v1/me` — authenticated user ID only.
 - `GET /api/v1/workspace-access?workspace_id=<uuid>` — the authenticated
   member's workspace role.
-- `POST /api/v1/aptitude/invitations` — recruiter-authorized invitation link
-  creation; email delivery is manual.
-- `POST /api/v1/aptitude/candidate/session`
-- `POST /api/v1/aptitude/candidate/start`
-- `POST /api/v1/aptitude/candidate/answer`
-- `POST /api/v1/aptitude/candidate/submit`
-- `POST /api/v1/aptitude/candidate/event` — token-mediated public candidate
-  endpoints. Tokens are hashed before database access; answer keys remain in
-  the private schema and are only used by server-side scoring.
+- `POST /api/v1/email-delivery/{jobID}/action` — recruiter-authorized delivery
+  queue action (send, retry, resend).
+- `POST /api/webhooks/resend` — signature-verified provider webhook for delivery
+  events.
+
+The former aptitude endpoints were removed together with the aptitude module.
 
 Workspace access is queried with the caller's token, so Supabase RLS remains
 active. The recruiter screening page reads persisted job-specific assessments
 and can request processing/retry through permission-checked database functions.
-The aptitude workspace provides test/version authoring, publishing, manual
-invitation links, autosaved candidate sessions, event notice/monitoring, and
-server-calculated results. Passing a configured aptitude threshold is only a
-recruiter-facing recommendation; no application stage changes automatically.
 The Vite development server proxies `/api` requests to `http://127.0.0.1:8080`;
 run the Go server alongside `npm run dev`. Configure the server-only
-`SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) for aptitude
-endpoints and the worker.
+`SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) for the email
+delivery endpoints, the screening worker and the email worker.
 
-### Resend setup (owner action)
+### Email delivery (owner action)
 
-Email templates and a provider client are implemented, but automatic delivery,
-outbox processing, provider webhooks, and delivery-status reconciliation are
-not yet connected. Do not configure production sends based on this scaffold.
-When the delivery workflow is completed, the project owner must:
+The backend sends mail through your own SMTP server. No third-party email API is
+required. Configure these only in the worker's secret environment, never in a
+`VITE_` variable and never in Git:
 
-1. Create an account at [Resend](https://resend.com/) and generate an API key
-   with email-send access.
-2. Add and verify a sending domain under **Domains**. Publish the exact SPF and
-   DKIM DNS records Resend displays; configure DMARC for the domain's policy.
-3. Configure `EMAIL_FROM_ADDRESS` using the verified domain and set
-   `EMAIL_FROM_NAME=ProofHire`.
-4. Store `EMAIL_API_KEY`, sender settings, and `APP_BASE_URL` only in the
-   backend/worker secret environment (never in Vite variables or Git). Copy
-   `.env.backend.example` and fill the values in the deployment's secret
-   manager; do not paste credentials into chat.
-5. In Resend **Webhooks**, register the deployed API webhook URL and select
-   delivery, bounce, and complaint events. Webhook signature verification is
-   not implemented yet, so do not enable this workflow until it is.
-6. After the outbox and webhook code is deployed, send a controlled message to
-   an address you control and verify provider acceptance, delivery, and bounce
-   events in both Resend and the recruiter dashboard.
+| Variable | Purpose |
+| --- | --- |
+| `EMAIL_PROVIDER` | `smtp` (or `resend` for the optional HTTP client) |
+| `SMTP_HOST` | SMTP server hostname |
+| `SMTP_PORT` | 587 for STARTTLS, 465 for implicit TLS, 25 for a trusted relay |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | Set both, or neither for an unauthenticated relay |
+| `SMTP_SECURITY` | `starttls` (default), `tls`, or `none` (trusted relay only) |
+| `EMAIL_FROM_ADDRESS` / `EMAIL_FROM_NAME` | Verified sender identity |
+| `APP_BASE_URL` | Public site origin used in emailed links |
 
-Resend may allow testing from its onboarding/sandbox sender before a domain is
-verified, with restrictions on permitted recipients and sender identity.
-Consult the current Resend dashboard and documentation for the account-specific
-limits; this repository has not tested an actual Resend account or delivered
+After configuring, restart the worker and read its log: `email delivery is
+disabled` with a reason means the configuration was rejected and nothing will
+send; no such line means the transport is live. Queued messages stay
+`blocked_configuration` until a transport is available. SMTP has no provider
+webhook, so delivery state is recorded from a successful SMTP exchange rather
+than a vendor receipt.
 email.
 
 ## Supabase configuration
@@ -212,19 +198,28 @@ Required frontend environment variables:
 Only the anon/publishable key belongs in browser configuration. **Never put a
 Supabase secret/service-role key or other server secret in a
 `VITE_` variable.** The API server uses the anon/publishable key to verify
-sessions and a server-only privileged credential for aptitude session RPCs.
-The isolated screening worker uses that same privileged credential and must be
-deployed as a protected server process, not in the browser or a static Vite
-bundle.
+sessions and a server-only privileged credential for email delivery queue
+operations. The isolated screening and email workers use that same privileged
+credential and must be deployed as protected server processes, not in the
+browser or a static Vite bundle.
 
 Database migrations are in `supabase/migrations/`; read
 [`supabase/database-architecture.md`](supabase/database-architecture.md) for the
 repository audit, schema relationships, RLS rules, and safe test setup. The
-screening, aptitude, resume-version, recruitment-foundation, coding, email, and
-deterministic-screening-configuration migrations are additive and have **not**
-been verified as applied to any database.
-Verify the target is a disposable local/test database before applying them;
-never run a local reset or migration command against production. The resume
+Live schema status (verified 12 November 2026): the hosted project has the
+core tables, the screening pipeline, the aptitude/coding/interview tables and
+the public application RPC, but it is missing `account_deletion_requests`,
+`application_notes`, and the deterministic screening configuration
+(`jobs.minimum_screening_percentage`, `jobs.screening_weights`,
+`job_screening_requirements` and `replace_job_screening_requirements`). Until
+the three aptitude-free migrations in
+[`supabase/operations/P0_RUNBOOK.md`](supabase/operations/P0_RUNBOOK.md) are
+applied, the jobs page and job creation fail against the live project. The
+technical interview migration `202611120001_technical_interview_engine.sql` must
+be applied after those three; without it the interview engine pages have no
+storage.
+
+Verify the target is a disposable local/test database before applying them; never run a local reset or migration command against production. The resume
 bucket must remain private. Do not grant anonymous users direct
 candidate/application/assessment table permissions.
 
@@ -232,15 +227,62 @@ The screening engine performs exact phrase and structured experience matching
 locally. Scores include unmatched requirements in the denominator; partial
 matches receive half weight. Absence of a resume phrase is recorded as missing
 evidence, not proof the candidate lacks a qualification. Explicitly stated
-absence can be marked not met only where the resume says so directly. No live
-Supabase RLS check or full database integration test was possible because the
-configured Supabase API returned HTTP 401. Recruiter job settings and
-requirements must be saved after the reviewed migration is applied; changing
-them queues screening again. Existing application records without a stored
+absence can be marked not met only where the resume says so directly. The live
+project was reachable on 12 November 2026, but no signed-in RLS or full database
+integration test has been run from this repository, and the screening
+configuration migration is still missing there. Recruiter job settings and
+requirements must be saved after that migration is applied; changing them
+queues screening again. Existing application records without a stored
 resume cannot be reconstructed from their candidate record; recruiters must
 attach the original document to that application before screening. Screening
 results are advisory: authorized recruiters make and audit application-stage
 decisions separately.
+
+## Technical interview engine
+
+The interview engine adds four moving parts:
+
+1. `supabase/migrations/202611120001_technical_interview_engine.sql` — question
+   bank, sessions, answers, drafts, submissions, proctoring events, recruiter
+   and worker RPCs.
+2. `src/interviews/CandidateInterview.tsx` — the candidate experience at
+   `/interview/:token` (full-screen gate, server timer, autosave, code editor).
+3. `src/interviews/InterviewWorkspace.tsx` — the recruiter workspace at
+   `/interviews/technical` (question bank, session creation, review and scoring).
+4. `backend/runner` + `backend/interview` — the sandboxed execution engine and
+   the evaluation worker.
+
+### Runner host
+
+Candidate code executes in disposable Docker containers. The worker therefore
+needs a host with the Docker daemon and cgroup limits — not Vercel and not a
+serverless runtime. A single small VPS is enough to start; add replicas of
+`go run ./backend/cmd/worker` to scale, because submissions are leased from a
+database queue and never delivered twice.
+
+```bash
+# one-time: prepare the images you support
+docker pull python:3.12-alpine
+docker pull node:22-alpine
+docker pull golang:1.23-alpine
+
+# start the workers (screening + email + interview evaluation)
+CODE_RUNNER_ENABLED=true \
+RUNNER_PREWARM_LANGUAGES=python,javascript,go \
+go run ./backend/cmd/worker
+```
+
+The sandbox runs with no network, a read-only root filesystem, a 64 MiB writable
+tmpfs, capped memory/CPU/processes, a non-root user and a hard wall-clock
+deadline. Run the integration test on that host (it exercises real containers,
+network isolation and the timeout):
+
+```bash
+go test ./backend/runner -run TestPythonExecution -v
+```
+
+Supported languages are `python`, `javascript`, `go`, `cpp` and `java`; each is
+an image plus two commands in `backend/runner/runner.go`.
 
 ## GitHub checks
 

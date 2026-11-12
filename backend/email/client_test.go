@@ -19,7 +19,7 @@ func TestResendSendIncludesIdempotencyAndBothBodies(t *testing.T) {
 		if request.Header.Get("Authorization") != "Bearer test-key" {
 			t.Fatal("provider authorization header was not set")
 		}
-		if request.Header.Get("Idempotency-Key") != "aptitude:invite:123" {
+		if request.Header.Get("Idempotency-Key") != "screening:update:123" {
 			t.Fatal("provider idempotency key was not set")
 		}
 		var payload struct {
@@ -57,7 +57,7 @@ func TestResendSendIncludesIdempotencyAndBothBodies(t *testing.T) {
 		Subject:        "An invitation",
 		HTML:           "<p>Hello</p>",
 		Text:           "Hello",
-		IdempotencyKey: "aptitude:invite:123",
+		IdempotencyKey: "screening:update:123",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,40 +120,6 @@ func TestResendSendRejectsInvalidMessage(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid recipient to be rejected")
-	}
-}
-
-func TestAptitudeTemplateContainsRequiredFieldsAndEscapesHTML(t *testing.T) {
-	rendered, err := RenderAptitudeInvitation(AptitudeInvitation{
-		CandidateName: `<Candidate>`,
-		JobTitle:      `Engineer & "Analyst"`,
-		CompanyName:   `Example <Company>`,
-		Duration:      75 * time.Minute,
-		QuestionCount: 20,
-		Deadline:      mustTime(t, "2026-12-01T10:00:00Z"),
-		AssessmentURL: "https://proofhire.example/aptitude/secure-token",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{
-		"ProofHire", "Start Assessment", "Engineer &amp; &#34;Analyst&#34;",
-		"Example &lt;Company&gt;", "20", "secure-token", "outside assistance",
-	} {
-		if !strings.Contains(rendered.HTML, expected) {
-			t.Errorf("HTML email missing %q", expected)
-		}
-	}
-	for _, expected := range []string{
-		"1 hour 15 minutes", "20", "https://proofhire.example/aptitude/secure-token",
-		"outside assistance",
-	} {
-		if !strings.Contains(rendered.Text, expected) {
-			t.Errorf("plain-text email missing %q", expected)
-		}
-	}
-	if strings.Contains(rendered.HTML, "<Candidate>") {
-		t.Fatal("candidate input was not escaped in HTML")
 	}
 }
 

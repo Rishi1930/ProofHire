@@ -1192,10 +1192,11 @@ export default function JobHiringWorkspace({
             </Button>
           </div>
           <div className="external-share-unavailable">
-            <strong>External assessment link unavailable</strong>
+            <strong>External candidate links unavailable</strong>
             <p>
-              Public aptitude test invitations are issued separately from profile
-              sharing and are manually delivered with an expiring, single-use token.
+              Profile sharing is internal only. Interview question and coding
+              session links will be issued from the interview workspace when the
+              technical interview module ships.
             </p>
           </div>
         </Modal>
