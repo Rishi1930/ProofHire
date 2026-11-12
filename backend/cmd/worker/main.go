@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rishi1930/proofhire/backend/config"
 	"github.com/rishi1930/proofhire/backend/email"
@@ -61,28 +62,48 @@ func main() {
 			logger.Error("interview evaluation worker could not start", "error", err)
 			os.Exit(1)
 		}
-		go func() {
-			if err := interviewWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("interview evaluation worker stopped unexpectedly", "error", err)
-				stop()
-			}
-		}()
+		go runWorker(ctx, logger, "interview evaluation worker (needs Docker)", 15*time.Second, interviewWorker.Run)
 	}
 
-	go func() {
-		if err := emailWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("email worker stopped unexpectedly", "error", err)
-			stop()
-		}
-	}()
+	go runWorker(ctx, logger, "email worker", 5*time.Second, emailWorker.Run)
 	logger.Info(
 		"screening, email and interview workers started",
 		"engine", "proofhire-deterministic-1",
 		"concurrency", environment.ScreeningConcurrency,
 		"poll_interval", environment.ScreeningPollInterval.String(),
 	)
-	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("screening worker stopped unexpectedly", "error", err)
-		os.Exit(1)
+	runWorker(ctx, logger, "screening worker", 5*time.Second, worker.Run)
+}
+
+// runWorker keeps one worker alive without taking the others down with it. A
+// missing Docker daemon or a transient database error is retried with backoff
+// instead of exiting the process, so screening and email keep delivering.
+func runWorker(
+	ctx context.Context,
+	logger *slog.Logger,
+	name string,
+	delay time.Duration,
+	run func(context.Context) error,
+) {
+	wait := delay
+	for ctx.Err() == nil {
+		err := run(ctx)
+		if err == nil || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
+		logger.Error(name+" stopped; retrying", "error", err, "retry_in", wait.String())
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if wait < 30*time.Second {
+			wait *= 2
+			if wait > 30*time.Second {
+				wait = 30 * time.Second
+			}
+		}
 	}
 }

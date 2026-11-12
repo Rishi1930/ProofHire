@@ -114,6 +114,12 @@ type serviceError struct {
 }
 
 func (serviceError *serviceError) Error() string {
+	if serviceError.StatusCode > 0 {
+		return fmt.Sprintf(
+			"Supabase screening operation failed with status %d",
+			serviceError.StatusCode,
+		)
+	}
 	return "Supabase screening operation failed"
 }
 
