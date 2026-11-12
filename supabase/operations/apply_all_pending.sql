@@ -4,6 +4,8 @@
 --   supabase/migrations/202611120002_email_delivery_runtime.sql
 --   supabase/migrations/202611120003_resume_profile_submission.sql
 --   supabase/migrations/202611120005_openings_and_pipeline_emails.sql
+--   supabase/migrations/202611120006_requeue_superseded_screening.sql
+--   supabase/migrations/202611120007_align_screening_fingerprint.sql
 --   supabase/operations/demo_interview_content.sql
 --
 -- Each section keeps its own transaction, so a failure in one leaves the other
@@ -1135,3 +1137,212 @@ begin
   end loop;
 end;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 202611120006_requeue_superseded_screening.sql
+-- ---------------------------------------------------------------------------
+
+-- Let a screening job be requeued after it was superseded or cancelled.
+--
+-- The enqueue function only revived 'failed' and 'waiting_configuration' jobs,
+-- so once the worker retired a job as 'superseded' the same application could
+-- never be screened again: the insert conflicts with the retired row and the
+-- retry branch ignores its status. Retrying now covers every terminal state.
+--
+-- Safe to run more than once.
+
+begin;
+
+create or replace function public.enqueue_application_screening(
+  target_application_id uuid,
+  allow_failed_retry boolean default false
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  application_row record;
+  fingerprint text;
+  screening_job_id uuid;
+begin
+  select application.id, application.workspace_id, application.resume_path
+  into application_row
+  from public.applications application
+  where application.id = target_application_id;
+
+  if not found or application_row.resume_path is null then
+    return null;
+  end if;
+
+  fingerprint := public.application_screening_input_fingerprint(
+    target_application_id
+  );
+  if fingerprint is null then
+    return null;
+  end if;
+
+  insert into public.application_screening_jobs (
+    workspace_id,
+    application_id,
+    input_fingerprint
+  )
+  values (
+    application_row.workspace_id,
+    application_row.id,
+    fingerprint
+  )
+  on conflict (application_id, input_fingerprint) do nothing
+  returning id into screening_job_id;
+
+  if screening_job_id is null and allow_failed_retry then
+    update public.application_screening_jobs screening_job
+    set status = 'pending',
+        attempts = 0,
+        available_at = now(),
+        lease_token = null,
+        locked_by = null,
+        locked_until = null,
+        last_error_code = null,
+        failure_reason = null,
+        completed_at = null,
+        updated_at = now()
+    where screening_job.application_id = application_row.id
+      and screening_job.input_fingerprint = fingerprint
+      and screening_job.status in (
+        'failed',
+        'waiting_configuration',
+        'superseded',
+        'cancelled'
+      )
+    returning id into screening_job_id;
+  end if;
+
+  if screening_job_id is null then
+    select screening_job.id
+    into screening_job_id
+    from public.application_screening_jobs screening_job
+    where screening_job.application_id = application_row.id
+      and screening_job.input_fingerprint = fingerprint;
+  end if;
+
+  return screening_job_id;
+end;
+$$;
+
+revoke all on function public.enqueue_application_screening(uuid, boolean)
+  from public, anon, authenticated;
+
+commit;
+
+
+-- ---------------------------------------------------------------------------
+-- 202611120007_align_screening_fingerprint.sql
+-- ---------------------------------------------------------------------------
+
+-- Use one screening fingerprint everywhere.
+--
+-- claim_application_screening_job still hashed only seven job fields inline
+-- (resume path, title, department, description, skills, experience), while
+-- enqueue_application_screening and complete_application_screening_job use
+-- application_screening_input_fingerprint(), which also covers the screening
+-- threshold, the weights and the configured requirements. Every queued job was
+-- therefore considered stale the moment it was claimed and was retired as
+-- 'superseded' without ever being scored.
+--
+-- The claim function now calls the same helper as everything else.
+--
+-- Safe to run more than once.
+
+begin;
+
+create or replace function public.claim_application_screening_job(
+  worker_id text,
+  lease_seconds integer default 120
+)
+returns setof public.application_screening_jobs
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'Service role is required.';
+  end if;
+  if worker_id is null or char_length(trim(worker_id)) not between 1 and 120 then
+    raise exception 'Worker identifier is invalid.';
+  end if;
+  lease_seconds := greatest(30, least(coalesce(lease_seconds, 600), 600));
+
+  update public.application_screening_jobs as screening_job
+  set status = 'failed',
+      lease_token = null,
+      locked_by = null,
+      locked_until = null,
+      last_error_code = 'lease_expired',
+      failure_reason = 'Processing lease expired after the retry limit.',
+      updated_at = now()
+  where screening_job.status = 'processing'
+    and screening_job.locked_until < now()
+    and screening_job.attempts >= screening_job.max_attempts;
+
+  update public.application_screening_jobs as screening_job
+  set status = 'superseded',
+      lease_token = null,
+      locked_by = null,
+      locked_until = null,
+      last_error_code = 'inputs_changed',
+      failure_reason = 'Job or resume changed; a newer screening job is queued.',
+      updated_at = now()
+  where (
+      screening_job.status in ('pending', 'retry_wait')
+      or (
+        screening_job.status = 'processing'
+        and screening_job.locked_until < now()
+      )
+    )
+    and screening_job.input_fingerprint is distinct from
+      public.application_screening_input_fingerprint(screening_job.application_id);
+
+  return query
+  with next_job as (
+    select screening_job.id
+    from public.application_screening_jobs as screening_job
+    where screening_job.attempts < screening_job.max_attempts
+      and (
+        (
+          screening_job.status in ('pending', 'retry_wait')
+          and screening_job.available_at <= now()
+          and screening_job.input_fingerprint =
+            public.application_screening_input_fingerprint(screening_job.application_id)
+        )
+        or (
+          screening_job.status = 'processing'
+          and screening_job.locked_until < now()
+        )
+      )
+    order by screening_job.available_at, screening_job.created_at
+    for update skip locked
+    limit 1
+  )
+  update public.application_screening_jobs as screening_job
+  set status = 'processing',
+      attempts = screening_job.attempts + 1,
+      lease_token = gen_random_uuid(),
+      locked_by = worker_id,
+      locked_until = now() + make_interval(secs => lease_seconds),
+      updated_at = now()
+  from next_job
+  where screening_job.id = next_job.id
+  returning screening_job.*;
+end;
+$$;
+
+revoke all on function public.claim_application_screening_job(text, integer)
+  from public, anon, authenticated;
+grant execute on function public.claim_application_screening_job(text, integer)
+  to service_role;
+
+commit;
+
