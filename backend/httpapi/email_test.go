@@ -28,7 +28,6 @@ func TestEmailDeliveryActionRequiresRecruiterAndForwardsRequest(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{ID: userID}, nil
 		}),
-		nil,
 		queue,
 		"",
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -71,7 +70,6 @@ func TestResendWebhookRecordsVerifiedDeliveryEvent(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{}, errors.New("authentication is not used")
 		}),
-		nil,
 		queue,
 		secret,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -106,7 +104,6 @@ func TestResendWebhookRejectsInvalidSignature(t *testing.T) {
 		verifierFunc(func(context.Context, string) (supabaseauth.User, error) {
 			return supabaseauth.User{}, errors.New("authentication is not used")
 		}),
-		nil,
 		queue,
 		"whsec_"+base64.StdEncoding.EncodeToString([]byte("webhook-secret-for-test")),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),

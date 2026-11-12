@@ -1,5 +1,5 @@
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, BriefcaseBusiness, CheckCircle2, FileText, LoaderCircle, UploadCloud } from 'lucide-react'
 
@@ -7,20 +7,28 @@ import { supabase } from '../lib/supabase'
 import { uploadPublicResume } from '../lib/resumeStorage'
 import { getErrorMessage, isAllowedResumeFile } from '../lib/utils'
 import BrandMark from '../components/BrandMark'
+import {
+  emptyResumeProfile,
+  extractResumeText,
+  parseResumeProfile,
+  type ResumeExperience,
+  type ResumeProfile,
+} from './resumeParser'
 
 type PublicJob = {
   id: string
   title: string
   workspace_id: string
   status: string
+  required_skills: string[]
+  preferred_skills: string[]
+  minimum_experience: number | null
 }
 
 type SubmissionResult = {
   success: boolean
   duplicate: boolean
 }
-
-const MAX_RESUME_SIZE = 5 * 1024 * 1024
 
 export default function PublicApplication() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -33,6 +41,13 @@ export default function PublicApplication() {
   const [phone, setPhone] = useState('')
   const [coverLetter, setCoverLetter] = useState('')
   const [resume, setResume] = useState<File | null>(null)
+  const [resumeProfile, setResumeProfile] = useState<ResumeProfile>(emptyResumeProfile)
+  const [skillsText, setSkillsText] = useState('')
+  const [experienceYearsText, setExperienceYearsText] = useState('')
+  const [experienceSummary, setExperienceSummary] = useState('')
+  const [extractingResume, setExtractingResume] = useState(false)
+  const extractionRequest = useRef(0)
+  const resumeInputRef = useRef<HTMLInputElement | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
   const [submitted, setSubmitted] = useState(false)
@@ -59,7 +74,7 @@ export default function PublicApplication() {
 
       const { data, error } = await supabase
         .from('jobs')
-        .select('id, title, workspace_id, status')
+        .select('id, title, workspace_id, status, required_skills, preferred_skills, minimum_experience')
         .eq('id', jobId)
         .eq('status', 'open')
         .maybeSingle()
@@ -86,25 +101,76 @@ export default function PublicApplication() {
 
   function handleResumeChange(file: File | null) {
     setFormError('')
+    const requestId = ++extractionRequest.current
 
     if (!file) {
-      setResume(null)
+      clearResumeDetails()
+      setExtractingResume(false)
       return
     }
 
     if (!isAllowedResumeFile(file)) {
-      setResume(null)
-      setFormError('Choose a PDF, DOC, or DOCX resume.')
+      clearResumeDetails()
+      setExtractingResume(false)
+      setFormError('Choose a PDF or DOCX resume.')
       return
     }
 
-    if (file.size > MAX_RESUME_SIZE) {
-      setResume(null)
-      setFormError('Your resume must be 5 MB or smaller.')
+    if (!/\.(pdf|docx)$/i.test(file.name)) {
+      clearResumeDetails()
+      setExtractingResume(false)
+      setFormError('Automatic resume extraction supports PDF and DOCX files.')
       return
     }
 
     setResume(file)
+    setFullName('')
+    setEmail('')
+    setPhone('')
+    setExtractingResume(false)
+    setResumeProfile(emptyResumeProfile())
+    setSkillsText('')
+    setExperienceYearsText('')
+    setExperienceSummary('')
+    setExtractingResume(true)
+    void (async () => {
+      try {
+        const text = await extractResumeText(file)
+        if (requestId !== extractionRequest.current) return
+        const profile = parseResumeProfile(
+          text,
+          [...(job?.required_skills ?? []), ...(job?.preferred_skills ?? [])],
+        )
+        setResumeProfile(profile)
+        setFullName(profile.fullName)
+        setEmail(profile.email)
+        setPhone(profile.phone)
+        setSkillsText(profile.skills.join(', '))
+        setExperienceYearsText(
+          profile.experienceYears === null ? '' : String(profile.experienceYears),
+        )
+        setExperienceSummary(profile.experienceSummary)
+      } catch (error) {
+        if (requestId === extractionRequest.current) {
+          setFormError(getErrorMessage(error, 'Could not extract text from this resume.'))
+          clearResumeDetails()
+        }
+      } finally {
+        if (requestId === extractionRequest.current) setExtractingResume(false)
+      }
+    })()
+  }
+
+  function clearResumeDetails() {
+    setResume(null)
+    setResumeProfile(emptyResumeProfile())
+    setFullName('')
+    setEmail('')
+    setPhone('')
+    setSkillsText('')
+    setExperienceYearsText('')
+    setExperienceSummary('')
+    if (resumeInputRef.current) resumeInputRef.current.value = ''
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -121,7 +187,7 @@ export default function PublicApplication() {
       return
     }
 
-    if (!resume) {
+    if (!resume || extractingResume) {
       setFormError('Please attach your resume before submitting.')
       return
     }
@@ -133,6 +199,48 @@ export default function PublicApplication() {
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       setFormError('Enter a valid email address.')
+      return
+    }
+
+    if (!phone.trim()) {
+      setFormError('Enter a mobile number so the recruiting team can contact you.')
+      return
+    }
+
+    if (!resumeProfile.education.trim()) {
+      setFormError('Add your education details. They were not found in the resume.')
+      return
+    }
+
+    const skills = skillsText.split(',').map((skill) => skill.trim()).filter(Boolean)
+    if (skills.length === 0) {
+      setFormError('Add your skills. They were not found in the resume.')
+      return
+    }
+
+    const experienceYears = experienceYearsText.trim() === ''
+      ? null
+      : Number(experienceYearsText)
+    if (
+      job.minimum_experience !== null &&
+      job.minimum_experience > 0 &&
+      (experienceYears === null || !Number.isFinite(experienceYears))
+    ) {
+      setFormError(`Enter your years of experience for this job (minimum requirement: ${job.minimum_experience} years).`)
+      return
+    }
+    if (experienceYears !== null && (!Number.isFinite(experienceYears) || experienceYears < 0 || experienceYears > 60)) {
+      setFormError('Years of experience must be between 0 and 60.')
+      return
+    }
+
+    const experiences = experienceYears !== null && experienceYears > 0
+      ? (resumeProfile.experience.length ? resumeProfile.experience : [{ company: '', role: '' }])
+      : resumeProfile.experience
+    if (experienceYears !== null && experienceYears > 0 && experiences.some(
+      (experience) => !experience.company.trim() || !experience.role.trim(),
+    )) {
+      setFormError('For work experience above 0 years, add the company and role.')
       return
     }
 
@@ -151,6 +259,18 @@ export default function PublicApplication() {
           p_job_id: job.id,
           p_full_name: fullName.trim(),
           p_email: email.trim().toLowerCase(),
+          p_resume_profile: {
+            version: 1,
+            education: resumeProfile.education.trim(),
+            skills,
+            experience_years: experienceYears,
+            experience: experiences.map((experience) => ({
+              company: experience.company.trim(),
+              role: experience.role.trim(),
+            })),
+            experience_summary: experienceSummary.trim(),
+            extraction_reviewed: true,
+          },
           p_phone: phone.trim() || null,
           p_cover_letter: coverLetter.trim() || null,
           p_resume_path: resumePath,
@@ -174,6 +294,26 @@ export default function PublicApplication() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const experienceRows = resumeProfile.experience.length
+    ? resumeProfile.experience
+    : Number(experienceYearsText) > 0
+      ? [{ company: '', role: '' }]
+      : []
+
+  function updateExperience(
+    index: number,
+    field: keyof ResumeExperience,
+    value: string,
+  ) {
+    const current = resumeProfile.experience.length
+      ? resumeProfile.experience
+      : [{ company: '', role: '' }]
+    const next = current.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, [field]: value } : item,
+    )
+    setResumeProfile({ ...resumeProfile, experience: next })
   }
 
   if (loadingJob) {
@@ -241,6 +381,51 @@ export default function PublicApplication() {
 
         <form onSubmit={handleSubmit} className="public-application-form">
           <div className="form-field">
+            <label htmlFor="applicant-resume">Resume <span>*</span></label>
+            <label
+              htmlFor="applicant-resume"
+              className="resume-upload-area"
+            >
+              <span className="resume-upload-icon">
+                {resume ? <FileText size={25} /> : <UploadCloud size={25} />}
+              </span>
+              <strong>{resume ? resume.name : 'Upload your resume'}</strong>
+              <span>
+                {resume
+                  ? `${(resume.size / 1024 / 1024).toFixed(2)} MB`
+                  : 'PDF or DOCX · Maximum 5 MB'}
+              </span>
+              <span className="resume-upload-action">
+                {resume ? 'Choose a different file' : 'Browse files'}
+              </span>
+            </label>
+            <input
+              id="applicant-resume"
+              ref={resumeInputRef}
+              name="resume"
+              type="file"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={(event) => handleResumeChange(event.target.files?.[0] ?? null)}
+              disabled={submitting}
+              required={!resume}
+              className="visually-hidden-file-input"
+            />
+            {extractingResume && (
+              <p className="application-confirmation-note" role="status">
+                <LoaderCircle size={15} className="spin-icon" /> Extracting resume details in your browser...
+              </p>
+            )}
+            {resume && !extractingResume && !formError && (
+              <p className="application-confirmation-note" role="status">
+                Resume text extracted. Please review and complete any missing or incorrect details below.
+              </p>
+            )}
+            <p className="application-confirmation-note">
+              Your resume is parsed locally in this browser before upload. Scanned/image-only PDFs need a text-based PDF or DOCX version.
+            </p>
+          </div>
+
+          <div className="form-field">
             <label htmlFor="applicant-name">Full name <span>*</span></label>
             <input
               id="applicant-name"
@@ -272,7 +457,7 @@ export default function PublicApplication() {
           </div>
 
           <div className="form-field">
-            <label htmlFor="applicant-phone">Phone number</label>
+            <label htmlFor="applicant-phone">Mobile number <span>*</span></label>
             <input
               id="applicant-phone"
               name="phone"
@@ -282,9 +467,124 @@ export default function PublicApplication() {
               onChange={(event) => setPhone(event.target.value)}
               placeholder="Your contact number"
               maxLength={30}
+              required
               disabled={submitting}
             />
           </div>
+
+          <div className="form-field">
+            <label htmlFor="applicant-education">Education <span>*</span></label>
+            <textarea
+              id="applicant-education"
+              name="education"
+              value={resumeProfile.education}
+              onChange={(event) => setResumeProfile({ ...resumeProfile, education: event.target.value })}
+              placeholder="Education was not found in your resume. Add your qualification and institution."
+              rows={3}
+              maxLength={4000}
+              required
+              disabled={submitting}
+            />
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="applicant-skills">Skills <span>*</span></label>
+            <input
+              id="applicant-skills"
+              name="skills"
+              value={skillsText}
+              onChange={(event) => setSkillsText(event.target.value)}
+              placeholder="Enter skills separated by commas"
+              maxLength={4000}
+              required
+              disabled={submitting}
+            />
+            <p className="application-confirmation-note">
+              Required for this job: {job.required_skills?.join(', ') || 'None specified'}
+              {job.preferred_skills?.length ? ` · Preferred: ${job.preferred_skills.join(', ')}` : ''}
+            </p>
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="applicant-experience-years">
+              Years of relevant experience
+              {job.minimum_experience !== null && job.minimum_experience > 0 && <span> *</span>}
+            </label>
+            <input
+              id="applicant-experience-years"
+              name="experienceYears"
+              type="number"
+              min="0"
+              max="60"
+              step="0.5"
+              value={experienceYearsText}
+              onChange={(event) => setExperienceYearsText(event.target.value)}
+              placeholder={job.minimum_experience && job.minimum_experience > 0 ? `Minimum ${job.minimum_experience} years` : 'Not specified'}
+              required={job.minimum_experience !== null && job.minimum_experience > 0}
+              disabled={submitting}
+            />
+            {job.minimum_experience !== null && job.minimum_experience > 0 && (
+              <p className="application-confirmation-note">
+                The recruiter set a minimum of {job.minimum_experience} years. Enter 0 if you have no relevant experience.
+              </p>
+            )}
+          </div>
+
+          {experienceRows.map((experience, index) => (
+            <div className="form-field" key={`experience-${index}`}>
+              <label>Experience {index + 1}{Number(experienceYearsText) > 0 && <span> *</span>}</label>
+              <div className="resume-experience-row">
+                <input
+                  aria-label={`Company for experience ${index + 1}`}
+                  name={`experienceCompany-${index}`}
+                  value={experience.company}
+                  onChange={(event) => updateExperience(index, 'company', event.target.value)}
+                  placeholder="Company"
+                  maxLength={180}
+                  required={Number(experienceYearsText) > 0}
+                  disabled={submitting}
+                />
+                <input
+                  aria-label={`Role for experience ${index + 1}`}
+                  name={`experienceRole-${index}`}
+                  value={experience.role}
+                  onChange={(event) => updateExperience(index, 'role', event.target.value)}
+                  placeholder="Role / job title"
+                  maxLength={180}
+                  required={Number(experienceYearsText) > 0}
+                  disabled={submitting}
+                />
+              </div>
+              {index === experienceRows.length - 1 && (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setResumeProfile({
+                    ...resumeProfile,
+                    experience: [...(resumeProfile.experience.length ? resumeProfile.experience : [{ company: '', role: '' }]), { company: '', role: '' }],
+                  })}
+                  disabled={submitting}
+                >
+                  Add another role
+                </button>
+              )}
+            </div>
+          ))}
+
+          {experienceSummary && (
+            <div className="form-field">
+              <label htmlFor="applicant-experience-summary">Resume work history (review)</label>
+              <textarea
+                id="applicant-experience-summary"
+                name="experienceSummary"
+                value={experienceSummary}
+                onChange={(event) => setExperienceSummary(event.target.value)}
+                rows={4}
+                maxLength={6000}
+                disabled={submitting}
+              />
+            </div>
+          )}
 
           <div className="form-field">
             <label htmlFor="applicant-cover-letter">Cover letter <span className="optional-label">Optional</span></label>
@@ -297,37 +597,6 @@ export default function PublicApplication() {
               rows={5}
               maxLength={5000}
               disabled={submitting}
-            />
-          </div>
-
-          <div className="form-field">
-            <label htmlFor="applicant-resume">Resume <span>*</span></label>
-            <label
-              htmlFor="applicant-resume"
-              className="resume-upload-area"
-            >
-              <span className="resume-upload-icon">
-                {resume ? <FileText size={25} /> : <UploadCloud size={25} />}
-              </span>
-              <strong>{resume ? resume.name : 'Upload your resume'}</strong>
-              <span>
-                {resume
-                  ? `${(resume.size / 1024 / 1024).toFixed(2)} MB`
-                  : 'PDF, DOC or DOCX · Maximum 5 MB'}
-              </span>
-              <span className="resume-upload-action">
-                {resume ? 'Choose a different file' : 'Browse files'}
-              </span>
-            </label>
-            <input
-              id="applicant-resume"
-              name="resume"
-              type="file"
-              accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(event) => handleResumeChange(event.target.files?.[0] ?? null)}
-              disabled={submitting}
-              required={!resume}
-              className="visually-hidden-file-input"
             />
           </div>
 

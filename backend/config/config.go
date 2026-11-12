@@ -31,7 +31,6 @@ type Config struct {
 	EmailWebhookSecret     string
 	EmailFromAddress       string
 	EmailFromName          string
-	AppBaseURL             string
 	ResumeOCREnabled       bool
 	ScreeningConcurrency   int
 	ScreeningPollInterval  time.Duration
@@ -68,7 +67,6 @@ func FromEnvironment() (Config, error) {
 		EmailWebhookSecret:     strings.TrimSpace(os.Getenv("RESEND_WEBHOOK_SECRET")),
 		EmailFromAddress:       strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS")),
 		EmailFromName:          strings.TrimSpace(os.Getenv("EMAIL_FROM_NAME")),
-		AppBaseURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/"),
 		ScreeningConcurrency:   1,
 		ScreeningPollInterval:  2 * time.Second,
 	}
@@ -130,8 +128,7 @@ func (config Config) Validate() error {
 
 func (config Config) ValidateEmail() error {
 	if config.EmailProvider == "" && config.EmailAPIKey == "" &&
-		config.EmailFromAddress == "" && config.EmailFromName == "" &&
-		config.AppBaseURL == "" {
+		config.EmailFromAddress == "" && config.EmailFromName == "" {
 		return fmt.Errorf("email delivery is not configured")
 	}
 	if !strings.EqualFold(config.EmailProvider, "resend") {
@@ -145,15 +142,6 @@ func (config Config) ValidateEmail() error {
 	}
 	if config.EmailFromName == "" || len(config.EmailFromName) > 120 {
 		return fmt.Errorf("EMAIL_FROM_NAME must contain 1 to 120 characters")
-	}
-	return validatePublicHTTPSURL(config.AppBaseURL, "APP_BASE_URL")
-}
-
-func validatePublicHTTPSURL(value, name string) error {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", name)
 	}
 	return nil
 }

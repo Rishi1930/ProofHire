@@ -11,8 +11,6 @@ const Dashboard = lazy(() => import('../Dashboard'))
 const Jobs = lazy(() => import('../jobs/Jobs'))
 const Applications = lazy(() => import('../applications/Applications'))
 const Screening = lazy(() => import('../recruitment/Screening'))
-const Aptitude = lazy(() => import('../aptitude/Aptitude'))
-const CandidateAptitude = lazy(() => import('../aptitude/CandidateAssessment'))
 const Interviews = lazy(() => import('../recruitment/Interviews'))
 const Reports = lazy(() => import('../recruitment/Reports'))
 const PublicApplication = lazy(
@@ -59,15 +57,6 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: 'aptitude/:token',
-        element: (
-          <Suspense fallback={<RouteLoading />}>
-            <CandidateAptitude />
-          </Suspense>
-        ),
-      },
-
-      {
         path: 'dashboard',
         element: (
           <ProtectedRoute>
@@ -113,16 +102,6 @@ export const router = createBrowserRouter([
           <ProtectedRoute>
             <Suspense fallback={<RouteLoading />}>
               <Screening />
-            </Suspense>
-          </ProtectedRoute>
-        ),
-      },
-      {
-        path: 'aptitude',
-        element: (
-          <ProtectedRoute>
-            <Suspense fallback={<RouteLoading />}>
-              <Aptitude />
             </Suspense>
           </ProtectedRoute>
         ),

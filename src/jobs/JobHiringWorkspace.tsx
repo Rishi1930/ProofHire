@@ -1030,6 +1030,56 @@ export default function JobHiringWorkspace({
                 )}
               </section>
               <section className="candidate-report-section">
+                <h3>Resume details</h3>
+                {candidate.resume_profile ? (
+                  <>
+                    <dl>
+                      <div>
+                        <dt>Education</dt>
+                        <dd style={{ whiteSpace: 'pre-wrap' }}>
+                          {candidate.resume_profile.education || 'Not provided'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Skills</dt>
+                        <dd>
+                          {candidate.resume_profile.skills?.length
+                            ? candidate.resume_profile.skills.join(', ')
+                            : 'Not provided'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Experience reported</dt>
+                        <dd>
+                          {candidate.resume_profile.experience_years == null
+                            ? 'Not provided'
+                            : `${candidate.resume_profile.experience_years} years`}
+                        </dd>
+                      </div>
+                    </dl>
+                    {candidate.resume_profile.experience?.map((experience, index) => (
+                      <p key={`${candidate.id}-experience-${index}`}>
+                        <strong>{experience.role || 'Role not provided'}</strong>
+                        {experience.company ? ` · ${experience.company}` : ''}
+                      </p>
+                    ))}
+                    {candidate.resume_profile.experience_summary && (
+                      <details>
+                        <summary>Extracted work-history text</summary>
+                        <p style={{ whiteSpace: 'pre-wrap' }}>
+                          {candidate.resume_profile.experience_summary}
+                        </p>
+                      </details>
+                    )}
+                    <p className="application-confirmation-note">
+                      These details were extracted from the resume and confirmed or corrected by the applicant.
+                    </p>
+                  </>
+                ) : (
+                  <p>No structured resume details were saved with this application.</p>
+                )}
+              </section>
+              <section className="candidate-report-section">
                 <h3>Job requirements</h3>
                 {job.required_skills.length ? (
                   <p><strong>Required:</strong> {job.required_skills.join(', ')}</p>
@@ -1190,13 +1240,6 @@ export default function JobHiringWorkspace({
             >
               Export review PDF
             </Button>
-          </div>
-          <div className="external-share-unavailable">
-            <strong>External assessment link unavailable</strong>
-            <p>
-              Public aptitude test invitations are issued separately from profile
-              sharing and are manually delivered with an expiring, single-use token.
-            </p>
           </div>
         </Modal>
       )}

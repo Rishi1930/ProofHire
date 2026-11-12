@@ -1,6 +1,11 @@
 # Supabase database setup
 
 Run migrations in timestamp order from the Supabase SQL Editor or Supabase CLI.
+The aptitude-related migrations listed below are historical and remain in this
+chain only to preserve existing migration history. The final
+`202611090002_remove_aptitude_assessments.sql` migration drops their schema and
+permanently deletes aptitude data. The final database no longer includes
+aptitude tests or their results.
 
 1. `202610240001_initial_schema.sql`
 2. `202610240002_security_policies.sql`
@@ -26,6 +31,8 @@ Run migrations in timestamp order from the Supabase SQL Editor or Supabase CLI.
 22. `202611030001_deterministic_screening_configuration.sql`
 23. `202611030002_score_aptitude_timeouts.sql`
 24. `202611030003_automated_aptitude_delivery.sql`
+25. `202611090001_resume_profile_and_deterministic_screening.sql`
+26. `202611090002_remove_aptitude_assessments.sql`
 
 Migration `202610260002_workspace_profile_and_account_deletion.sql` adds
 company profile fields and a 15-day account deletion queue. A returning
@@ -67,14 +74,6 @@ The screening migration adds the persistent AI-screening queue, assessment
 history, recruiter RPCs, and service-role worker operations. The next migration
 allows account deletion to retain decision and interview history by clearing a
 deleted user's actor reference, and adds an index for expired screening leases.
-The aptitude schema migration adds workspace-scoped test definitions,
-immutable published versions, questions, private answer keys, invitations,
-attempts, answers, and monitoring events. The follow-up aptitude workflow
-migration adds draft answer-key authoring, authenticated invitation creation,
-service-mediated candidate sessions, answer autosave, timer enforcement,
-server-side scoring, and limited browser-event monitoring. Candidate APIs
-return questions and options but never answer keys.
-
 The resume-version migration backfills application resume paths into an
 application-scoped history table, captures future resume-path changes, and
 associates newly queued screening work with the exact resume version while
@@ -92,38 +91,19 @@ The application-stage and interview migration records the known current stage
 for existing applications without fabricating earlier transitions, then
 captures future status changes. It adds interview schedule-change history,
 interviewer assignments, structured feedback, and scheduling metadata without
-replacing existing interview records. The aptitude foundation completion
-migration adds job-specific assessment configuration, randomized per-attempt
-question order, category/difficulty metadata, and private question-level
-scores; submitted attempts already in the database receive a score-detail
-backfill. The aptitude engine follow-up adds role and competency tags, active
-and approved question filtering, per-job difficulty quotas, and scores saved
-answers when an attempt expires. It does not expose private answer keys or
-modify historical migrations. Validate it on a disposable database before
-applying it to any hosted project.
-
-The automated aptitude delivery migration stores candidate invitation tokens
-only in the private schema, queues aptitude invitations and screening-result
-notices for the Resend worker, records aptitude failures for recruiter review,
-and advances passing assessments to the interview stage. If automatic aptitude
-invitation setup fails, screening remains recorded and a recruiter-visible
-workflow failure stores only a generic code and SQLSTATE. A service worker
-finalizes timed-out attempts from saved answers. Email delivery requires
-`EMAIL_PROVIDER=resend`, `EMAIL_API_KEY`, `EMAIL_FROM_ADDRESS`,
-`EMAIL_FROM_NAME`, and `APP_BASE_URL`; missing or invalid email settings do not
-prevent the backend from starting. Provider status remains
-`blocked_configuration` until configuration is available. The migration is
-additive, does not alter historical migrations, and must be validated on an
-isolated test database before deployment.
+replacing existing interview records. Historical aptitude migrations added
+assessment setup and automated follow-up; the final removal migration drops
+those aptitude objects and their data while retaining interviews and
+deterministic resume screening.
 
 The coding migration adds immutable challenge versions, private test cases and
 submission source, job configuration, invitations/attempts, and a lease-based
 evaluation queue. It deliberately does not execute submitted code or implement
 a runner. The email migration tracks invitations and scheduling notices in an
 idempotent delivery queue; it deliberately does not connect to an email
-provider or claim that a message was sent. The application summary view reports
-screening, aptitude, coding, and interview results separately and does not
-calculate a composite hiring score.
+provider or claim that a message was sent. The final application summary view
+reports screening, coding, and interview results and does not calculate a
+composite hiring score.
 
 See [`../database-architecture.md`](../database-architecture.md) for the
 repository audit, relationships, access matrix, migration caveats, and safe

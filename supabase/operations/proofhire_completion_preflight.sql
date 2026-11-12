@@ -13,8 +13,6 @@ with required_objects(schema_name, object_name, object_kind) as (
     ('public', 'application_resume_versions', 'new table'),
     ('public', 'application_screening_jobs', 'new table'),
     ('public', 'application_screening_assessments', 'new table'),
-    ('public', 'aptitude_tests', 'new table'),
-    ('public', 'aptitude_attempts', 'new table'),
     ('public', 'coding_challenges', 'new table'),
     ('public', 'coding_attempts', 'new table'),
     ('public', 'interview_records', 'new table'),

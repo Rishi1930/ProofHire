@@ -11,6 +11,13 @@ Supabase key; workspace access remains enforced by database Row Level Security.
   experience.
 - Candidate and application management, application status changes, and public
   job application pages.
+- Public applications extract text from PDF/DOCX resumes in the candidate's
+  browser, prefill contact details, education, skills, and stated experience,
+  and ask the applicant to review the extracted values and complete missing
+  required fields. Recruiter-configured minimum experience requires the
+  applicant to report years; any positive experience requires company and
+  role details. Confirmed structured details are stored with the application
+  and shown in recruiter review.
 - Private candidate resume storage and recruiter-only resume access. Recruiters
   can optionally attach a PDF, DOC, or DOCX resume while creating an application
   or upload one later from Resume Screening. Each upload is linked to that
@@ -36,23 +43,20 @@ Supabase REST requests still return HTTP 401.
 Screening scores are review signals and do not automatically reject candidates
 or advance application stages.
 
-The aptitude workflow includes test authoring and publishing, manually
-delivered invitations, candidate sessions, autosaved answers, server-side
-scoring, and recruiter-facing results. Passing a configured threshold is only
-a recommendation; application stages are never changed automatically.
-Recruiters can schedule interviews and record outcomes and feedback.
-
 The new database migrations add application-stage history, richer interview
 records, coding-assessment configuration and private submission/evaluation
 queues, email-delivery tracking, and an application-stage summary view. The Go
-backend now includes a Resend HTTP client and responsive, escaped HTML plus
-plain-text aptitude/interview invitation templates. They are **not yet wired
-to a transactional outbox worker or invitation workflow**; recorded emails
-remain manual-delivery records and no email is automatically sent. Coding
+backend includes a Resend client and interview invitation templates. Coding
 submissions remain unevaluated until a trusted runner is added. Candidate
-interview invitation links, expiry/revocation management, the interview
-placeholder route, and automatic aptitude-to-interview progression are not
-implemented. Recruiter decisions remain human decisions.
+interview invitation links, expiry/revocation management, and the interview
+placeholder route are not implemented. Recruiter decisions remain human
+decisions.
+
+Aptitude tests and their persisted database schema are being removed. The
+`202611090002_remove_aptitude_assessments.sql` migration permanently deletes
+aptitude definitions, invitations, answers, scores, and related workflow data.
+Historical migrations that once created that schema remain unchanged so
+existing migration histories stay valid.
 
 ## Requirements
 
@@ -60,6 +64,11 @@ implemented. Recruiter decisions remain human decisions.
 - npm.
 - A Supabase project configured for ProofHire.
 
+The public application form extracts PDF and DOCX text locally in the browser;
+this autofill uses deterministic parsing rules and does not call an AI API.
+It is a best-effort aid, not 100%-accurate extraction; candidates must review
+the results. Scanned/image-only PDFs are not OCR'd by the application form.
+After submission, the separate screening worker extracts the stored resume:
 DOCX extraction uses Go's standard library. PDF extraction requires Poppler's
 `pdftotext`; legacy DOC extraction requires `antiword`. Optional scanned-PDF OCR
 requires Poppler's `pdfinfo` and `pdftoppm` plus Tesseract, and must be
@@ -135,10 +144,7 @@ Worker settings include `SCREENING_WORKER_CONCURRENCY` (1–16),
 `false`). PDF and DOC processing require the optional utilities above. The
 worker uses the selected privileged credential only server-side for queue
 claiming, private resume retrieval, and persistence; its SQL functions require
-the service role and apply lease/idempotency checks. The backend also uses its
-server-only privileged credential for aptitude candidate sessions, invitations,
-answer autosave, and scoring; the credential is never sent to the browser.
-Recruiter assessment reads and reprocess requests use Supabase authentication
+the service role and apply lease/idempotency checks. Recruiter assessment reads and reprocess requests use Supabase authentication
 and RLS.
 
 The backend verifies access tokens against Supabase Auth. Its existing endpoints are:
@@ -147,27 +153,13 @@ The backend verifies access tokens against Supabase Auth. Its existing endpoints
 - `GET /api/v1/me` — authenticated user ID only.
 - `GET /api/v1/workspace-access?workspace_id=<uuid>` — the authenticated
   member's workspace role.
-- `POST /api/v1/aptitude/invitations` — recruiter-authorized invitation link
-  creation; email delivery is manual.
-- `POST /api/v1/aptitude/candidate/session`
-- `POST /api/v1/aptitude/candidate/start`
-- `POST /api/v1/aptitude/candidate/answer`
-- `POST /api/v1/aptitude/candidate/submit`
-- `POST /api/v1/aptitude/candidate/event` — token-mediated public candidate
-  endpoints. Tokens are hashed before database access; answer keys remain in
-  the private schema and are only used by server-side scoring.
 
 Workspace access is queried with the caller's token, so Supabase RLS remains
 active. The recruiter screening page reads persisted job-specific assessments
 and can request processing/retry through permission-checked database functions.
-The aptitude workspace provides test/version authoring, publishing, manual
-invitation links, autosaved candidate sessions, event notice/monitoring, and
-server-calculated results. Passing a configured aptitude threshold is only a
-recruiter-facing recommendation; no application stage changes automatically.
 The Vite development server proxies `/api` requests to `http://127.0.0.1:8080`;
 run the Go server alongside `npm run dev`. Configure the server-only
-`SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) for aptitude
-endpoints and the worker.
+`SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) for the worker.
 
 ### Resend setup (owner action)
 
@@ -182,7 +174,7 @@ When the delivery workflow is completed, the project owner must:
    DKIM DNS records Resend displays; configure DMARC for the domain's policy.
 3. Configure `EMAIL_FROM_ADDRESS` using the verified domain and set
    `EMAIL_FROM_NAME=ProofHire`.
-4. Store `EMAIL_API_KEY`, sender settings, and `APP_BASE_URL` only in the
+4. Store `EMAIL_API_KEY` and sender settings only in the
    backend/worker secret environment (never in Vite variables or Git). Copy
    `.env.backend.example` and fill the values in the deployment's secret
    manager; do not paste credentials into chat.
@@ -212,7 +204,7 @@ Required frontend environment variables:
 Only the anon/publishable key belongs in browser configuration. **Never put a
 Supabase secret/service-role key or other server secret in a
 `VITE_` variable.** The API server uses the anon/publishable key to verify
-sessions and a server-only privileged credential for aptitude session RPCs.
+sessions.
 The isolated screening worker uses that same privileged credential and must be
 deployed as a protected server process, not in the browser or a static Vite
 bundle.
@@ -220,9 +212,11 @@ bundle.
 Database migrations are in `supabase/migrations/`; read
 [`supabase/database-architecture.md`](supabase/database-architecture.md) for the
 repository audit, schema relationships, RLS rules, and safe test setup. The
-screening, aptitude, resume-version, recruitment-foundation, coding, email, and
-deterministic-screening-configuration migrations are additive and have **not**
-been verified as applied to any database.
+screening, resume-version, recruitment-foundation, coding, email,
+deterministic-screening-configuration, and resume-profile migrations have
+**not** been verified as applied to any database. The final aptitude-removal
+migration is destructive to aptitude data and should only be tested on a
+disposable local database before any hosted use.
 Verify the target is a disposable local/test database before applying them;
 never run a local reset or migration command against production. The resume
 bucket must remain private. Do not grant anonymous users direct

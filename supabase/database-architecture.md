@@ -1,6 +1,6 @@
 # ProofHire database audit and architecture
 
-Audit scope: repository files in this worktree on 2026-11-02. This is a
+Audit scope: repository files in this worktree on 2026-11-09. This is a
 repository audit, **not** a statement about the live Supabase project. No
 database was queried or changed.
 
@@ -42,14 +42,16 @@ files that may already have run:
 | `202610260006_recruiter_decisions_and_interviews.sql` | Adds decision history, decision RPC, interview records, and field-limited interview update privileges. |
 | `202610290001_screening_pipeline.sql` | Adds persistent screening jobs, cached criteria, assessments, recruiter RPCs, trigger enqueueing, leases, retries, and service-role operations. |
 | `202610290002_account_deletion_and_screening_indexes.sql` | Makes account deletion preserve audit rows by nulling a deleted actor reference and indexes expired screening lease recovery. |
-| `202610290003_aptitude_assessment_schema.sql` | Adds versioned aptitude tests, private answer keys, invitations, attempts, answers, monitoring events, and draft publication protections. |
+| `202610290003_aptitude_assessment_schema.sql` | Historical migration; its assessment schema is removed by `202611090002_remove_aptitude_assessments.sql`. |
 | `202610290004_application_resume_versions.sql` | Backfills application resume history, records future resume-path changes, and links new screening jobs to the exact resume version. |
 | `202610290005_status_default_and_deletion_indexes.sql` | Fixes the stale `applications.status` default to `new` and indexes pending/stale account-deletion work. |
 | `202610290006_application_notes.sql` | Adds append-only, workspace-scoped recruiter notes for applications. |
-| `202610290007_aptitude_assessment_workflow.sql` | Adds aptitude answer-key authoring, manual invitation creation, candidate sessions, autosave, timer enforcement, scoring, and monitoring RPCs. |
+| `202610290007_aptitude_assessment_workflow.sql` | Historical migration; its assessment RPCs are removed by `202611090002_remove_aptitude_assessments.sql`. |
 | `202611020001_application_stage_history_and_interviews.sql` | Backfills only each application's known current stage, records future stage changes, and adds structured interview scheduling, assignments, feedback, and event history. |
-| `202611020002_aptitude_assessment_foundation_completion.sql` | Adds job-specific aptitude configuration, randomized attempt question order, question metadata/scores, and score-detail backfill for previously submitted attempts. |
+| `202611020002_aptitude_assessment_foundation_completion.sql` | Historical migration; its assessment schema and data are removed by `202611090002_remove_aptitude_assessments.sql`. |
 | `202611020003_coding_assessment_and_email_delivery.sql` | Adds versioned coding challenges, private submissions/test cases, evaluation queue, manual/idempotent email tracking, and the application-stage summary view. |
+| `202611090001_resume_profile_and_deterministic_screening.sql` | Adds structured resume profiles to public applications and supports deterministic screening. |
+| `202611090002_remove_aptitude_assessments.sql` | Permanently removes aptitude schema, RPCs, email records, and persisted assessment data while preserving screening, coding, and interviews. |
 
 The reviewed order has no obvious missing prerequisite for a fresh Supabase
 database, subject to the platform providing expected `auth` and `storage`
@@ -60,6 +62,12 @@ and no reason to introduce one unless a fresh local replay demonstrates a
 concrete migration-chain failure.
 
 ## Current schema inventory
+
+This inventory describes the intended schema after the final migration. The
+historical assessment migrations remain in the chain, but
+`202611090002_remove_aptitude_assessments.sql` drops their tables, RPCs, and
+persisted data. That destructive migration has not yet been applied or
+validated against a database.
 
 Types below are PostgreSQL types. `id` is UUID unless noted. Primary keys and
 notable constraints are called out; FK cascade behavior is explicit where
@@ -98,22 +106,6 @@ database-backed, lease-claimed with `SKIP LOCKED`, and retried with bounded
 backoff. AI assessments are advisory; the RPC does not change application
 status.
 
-### Aptitude schema foundation
-
-| Table | Columns and constraints |
-|---|---|
-| `aptitude_tests` | Workspace-scoped title/description, nullable creator, timestamps; `(workspace_id,id)` unique. |
-| `aptitude_test_versions` | Workspace/test, positive version number, immutable version title/description, `draft`/`published` state, time limit, max attempts, nullable passing score, publication timestamp, nullable creator, timestamps; same-workspace test FK; unique test/version and workspace/id; status/timestamp consistency check. |
-| `aptitude_questions` | Workspace/version, display order, `single_choice`/`multiple_choice`/`short_text`, prompt, positive points, timestamps; same-workspace version FK and unique order; composite keys support answer/version integrity. |
-| `aptitude_question_options` | Workspace/question, display order, option text, creation time; same-workspace question FK and unique question/order. |
-| `proofhire_private.aptitude_answer_keys` | Workspace/question PK, private JSON key, timestamps; same-workspace question FK. The dedicated schema's access and table grants are service-role-only. |
-| `aptitude_invitations` | Workspace/application/test version, candidate email snapshot, SHA-256 token hash (never raw token), status, email delivery state/provider ID/error, expiry, attempt limit, nullable inviter, sent/created/updated timestamps; same-workspace FKs, token hash unique, and composite key for attempt/version integrity. Only safe columns are selectable by authenticated workspace users. |
-| `aptitude_attempts` | Workspace/invitation/version, attempt number, status, start/submission timestamps, nullable percentage score and aggregate JSON result; composite FKs ensure matching invitation/version and unique attempt number. Service-role trigger enforces published invitation, expiry, and attempt limits. |
-| `aptitude_answers` | Workspace/attempt/version/question, JSON answer, saved timestamp; composite FKs ensure the question is from the exact version used by that attempt. No direct anon/authenticated grants. |
-| `aptitude_monitoring_events` | Workspace/attempt, allowlisted event type, JSON metadata and timestamp; same-workspace attempt FK and attempt/time index. Recruiter-role read only. |
-| `job_aptitude_assessments` | Published test-version configuration per workspace/job, required flag and display order; same-workspace job/version FKs. |
-| `aptitude_attempt_questions`, `proofhire_private.aptitude_answer_scores` | Per-attempt question ordering and private question-level scores; direct client access to assignments/scores is revoked. Historical submitted attempts are backfilled where answer keys and answers exist. |
-
 ### Coding assessments, email, and summaries
 
 The coding schema contains workspace-scoped challenges and immutable published
@@ -126,15 +118,14 @@ Submitted code is **not executed** by these migrations; no runner or sandbox is
 implemented.
 
 `email_delivery_jobs` and `email_delivery_attempts` provide idempotent
-delivery tracking, bounded retry states, and worker leases. Existing aptitude
-and scheduled-interview invitations are recorded as manual-required unless
-their stored history already indicates delivery. No provider is configured
-and no email is sent by this schema.
+delivery tracking, bounded retry states, and worker leases. Scheduled
+interview invitations are recorded as manual-required unless their stored
+history already indicates delivery. No provider is configured and no email is
+sent by this schema.
 
 `application_recruitment_stage_summary` is a `security_invoker` view that
-reports application status and the latest screening, aptitude, coding, and
-interview outcomes separately. It does not derive or imply a composite hiring
-score.
+reports application status and the latest screening, coding, and interview
+outcomes separately. It does not derive or imply a composite hiring score.
 
 ### Column types, defaults, and indexes
 
@@ -210,56 +201,11 @@ with `CHECK` constraints.
   `workspace_id/application_id uuid NOT NULL`, `resume_path text NOT NULL`,
   `source text NOT NULL`, `uploaded_by uuid?`,
   `created_at timestamptz NOT NULL DEFAULT now()`.
-- `aptitude_tests`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id uuid NOT NULL`, `title text NOT NULL`, `description text?`,
-  `created_by uuid?`, `created_at/updated_at timestamptz NOT NULL DEFAULT now()`.
-- `aptitude_test_versions`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/test_id uuid NOT NULL`, `version_number integer NOT NULL`,
-  `version_title text NOT NULL`, `version_description text?`,
-  `version_status text NOT NULL DEFAULT 'draft'`,
-  `time_limit_seconds integer NOT NULL`, `max_attempts integer NOT NULL DEFAULT
-  1`, `passing_score numeric(5,2)?`, `published_at timestamptz?`,
-  `created_by uuid?`, `created_at/updated_at timestamptz NOT NULL DEFAULT now()`.
-- `aptitude_questions`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/test_version_id uuid NOT NULL`, `display_order integer NOT
-  NULL`, `question_type text NOT NULL`, `prompt text NOT NULL`,
-  `points numeric(6,2) NOT NULL DEFAULT 1`,
-  `created_at/updated_at timestamptz NOT NULL DEFAULT now()`.
-- `aptitude_question_options`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/question_id uuid NOT NULL`, `display_order integer NOT NULL`,
-  `option_text text NOT NULL`, `created_at timestamptz NOT NULL DEFAULT now()`.
-- `proofhire_private.aptitude_answer_keys`: `workspace_id/question_id uuid PK`,
-  `answer_key jsonb NOT NULL`,
-  `created_at/updated_at timestamptz NOT NULL DEFAULT now()`.
-- `aptitude_invitations`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/application_id/test_version_id uuid NOT NULL`,
-  `candidate_email text NOT NULL`, `token_hash text NOT NULL`,
-  `status text NOT NULL DEFAULT 'pending'`,
-  `email_status text NOT NULL DEFAULT 'queued'`,
-  `email_provider_message_id/email_error_code text?`, `expires_at timestamptz
-  NOT NULL`, `max_attempts integer NOT NULL DEFAULT 1`, `invited_by uuid?`,
-  `sent_at timestamptz?`, `created_at/updated_at timestamptz NOT NULL DEFAULT
-  now()`.
-- `aptitude_attempts`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/invitation_id/test_version_id uuid NOT NULL`,
-  `attempt_number integer NOT NULL`, `status text NOT NULL DEFAULT 'in_progress'`,
-  `started_at/created_at/updated_at timestamptz NOT NULL DEFAULT now()`,
-  `submitted_at timestamptz?`, `score numeric(5,2)?`, `result jsonb?`.
-- `aptitude_answers`: `workspace_id/attempt_id/test_version_id/question_id uuid
-  NOT NULL`, `answer jsonb NOT NULL`, `saved_at timestamptz NOT NULL DEFAULT
-  now()`; composite PK `(attempt_id,question_id)`.
-- `aptitude_monitoring_events`: `id uuid PK DEFAULT gen_random_uuid()`,
-  `workspace_id/attempt_id uuid NOT NULL`, `event_type text NOT NULL`,
-  `event_data jsonb NOT NULL DEFAULT '{}'`, `created_at timestamptz NOT NULL
-  DEFAULT now()`.
 - `application_stage_history`: workspace/application UUIDs, nullable prior
   status and actor, current status, event source, and creation timestamp.
 - Interview extensions: schedule-change events, interviewer assignments,
   feedback and criteria ratings, all workspace-scoped and linked to an
   interview.
-- `job_aptitude_assessments` and `aptitude_attempt_questions`: job/version
-  configuration and per-attempt question ordering. Private question scores are
-  stored in `proofhire_private.aptitude_answer_scores`.
 - Coding assessments: challenge/version and job configuration, invitations,
   attempts, submissions, aggregate results, evaluation jobs, plus private test
   cases/source/test-case results.
@@ -273,19 +219,14 @@ workspace/status, job, and candidate applications; workspace/time and
 application/time decision events; workspace/schedule interviews; queue claim,
 workspace/time, application/time, and expired-lease screening jobs;
 application/time and workspace/time/score assessments; workspace/job criteria
-fingerprints; workspace/application/time resume versions; workspace/time tests,
-test/version status, version/question order, invitation/application/time,
-invitation expiry, invitation/attempt number, and attempt monitoring history;
+fingerprints; workspace/application/time resume versions;
 plus pending/stale account-deletion claim indexes.
 
-Publishing a draft is an authenticated recruiter RPC. It checks that questions
-and private keys exist and that choice answer keys refer to options for the
-same question. Published aptitude and coding versions and their content cannot
-be updated; future edits require a new version. Aptitude candidate sessions,
-autosave, and server-side scoring are implemented in service-mediated backend
-operations. Coding candidate endpoints and a trusted execution runner remain
-unimplemented. Candidates must not be granted direct table access; future
-endpoints must authenticate short-lived invite tokens server-side.
+Published coding versions and their content cannot be updated; future edits
+require a new version. Coding candidate endpoints and a trusted execution
+runner remain unimplemented. Candidates must not be granted direct table
+access; future endpoints must authenticate short-lived invite tokens
+server-side.
 
 ## Relationships
 
@@ -310,17 +251,6 @@ erDiagram
   APPLICATIONS ||--o{ APPLICATION_SCREENING_ASSESSMENTS : assesses
   APPLICATIONS ||--o{ APPLICATION_RESUME_VERSIONS : retains
   APPLICATION_RESUME_VERSIONS ||--o{ APPLICATION_SCREENING_JOBS : screens
-  APTITUDE_TESTS ||--o{ APTITUDE_TEST_VERSIONS : versions
-  APTITUDE_TEST_VERSIONS ||--o{ APTITUDE_QUESTIONS : contains
-  APTITUDE_QUESTIONS ||--o{ APTITUDE_QUESTION_OPTIONS : offers
-  APTITUDE_QUESTIONS ||--|| PRIVATE_ANSWER_KEYS : keys
-  APPLICATIONS ||--o{ APTITUDE_INVITATIONS : invites
-  APTITUDE_TEST_VERSIONS ||--o{ APTITUDE_INVITATIONS : selects
-  APTITUDE_INVITATIONS ||--o{ APTITUDE_ATTEMPTS : permits
-  APTITUDE_ATTEMPTS ||--o{ APTITUDE_ANSWERS : saves
-  APTITUDE_QUESTIONS ||--o{ APTITUDE_ANSWERS : answers
-  APTITUDE_ATTEMPTS ||--o{ APTITUDE_ATTEMPT_QUESTIONS : orders
-  JOBS ||--o{ JOB_APTITUDE_ASSESSMENTS : configures
   JOBS ||--o{ JOB_CODING_ASSESSMENTS : configures
   CODING_CHALLENGES ||--o{ CODING_CHALLENGE_VERSIONS : versions
   CODING_CHALLENGE_VERSIONS ||--o{ CODING_INVITATIONS : invites
@@ -328,7 +258,6 @@ erDiagram
   CODING_ATTEMPTS ||--o{ CODING_SUBMISSIONS : receives
   CODING_SUBMISSIONS ||--o{ CODING_EVALUATION_JOBS : queues
   APPLICATIONS ||--o{ EMAIL_DELIVERY_JOBS : notifies
-  APTITUDE_ATTEMPTS ||--o{ APTITUDE_MONITORING_EVENTS : records
 ```
 
 Every application references a job and candidate in the same workspace.
@@ -351,10 +280,6 @@ application-scoped.
   service-role claim RPC, scheduled Edge Function.
 - **Screening:** queue states listed above; service-role claim/complete/fail,
   authenticated request/overview, and application/job update triggers.
-- **Aptitude:** draft/published immutable versions; invitation states
-  `pending`, `sent`, `started`, `completed`, `expired`, `revoked`, `failed`;
-  email states `queued`, `sent`, `delivered`, `failed`; attempt states
-  `in_progress`, `submitted`, `expired`, `abandoned`.
 - **Coding:** draft/published challenge versions; invitation states
   `pending`, `started`, `completed`, `expired`, `revoked`, `failed`; attempt
   states `in_progress`, `submitted`, `evaluating`, `completed`, `expired`,
@@ -367,9 +292,8 @@ application-scoped.
 Functions include `set_updated_at`, the `handle_new_user` auth trigger,
 `is_workspace_member`, `has_workspace_role`, the public submission RPC,
 account deletion request/cancel/claim RPCs, `record_application_decision`,
-screening enqueue/overview/claim/complete/fail/pause/resume functions, and
-`publish_aptitude_test_version`, aptitude candidate-session/scoring RPCs,
-coding test-case/submission/evaluation RPCs, and email delivery worker RPCs.
+screening enqueue/overview/claim/complete/fail/pause/resume functions, coding
+test-case/submission/evaluation RPCs, and email delivery worker RPCs.
 Security-definer functions use an empty `search_path` and are schema-qualified.
 Their grants are explicitly restricted where they are callable as RPCs.
 
@@ -387,9 +311,6 @@ Their grants are explicitly restricted where they are callable as RPCs.
 | Interviews and feedback | Workspace members; recruiter-only event/feedback reads. | Recruiters; feedback is append-only. | Recruiters can update scheduled time, mode/location, status, outcome, and feedback fields. | No direct delete policy for interview/feedback history. |
 | Account deletion | Subject can read own request. | Request RPC only. | Request/cancel/claim functions. | Cancel RPC; service role handles due request/account deletion. |
 | Screening | Workspace members read; report RPC checks membership. | Triggers/recruiter request RPC; service role queue worker handles writes. | Service-role worker functions only. | No direct client writes. |
-| Aptitude definitions | Workspace members read test content; owner/admin/recruiter manage drafts. | Recruiters create draft test/version/question content. | Recruiters edit drafts only; publish RPC validates and freezes versions. | Admins delete tests/drafts only. |
-| Aptitude answer keys/answers | Service role only. | Service role only. | Service role only. | Service role only; immutable published content trigger applies. |
-| Aptitude invitations/attempts | Workspace members see invitation safe columns and results; recruiters see monitoring events. | Service role only. | Service role only. | Service role only. |
 | Coding definitions | Workspace members can read challenge content; recruiters manage drafts and published job configurations. | Recruiters create drafts/configurations; service role creates invitations. | Recruiters edit drafts; published versions are immutable. | No direct client delete policy for challenge data. |
 | Coding submissions/results | Recruiters read safe aggregate results under RLS. | Service-role candidate/session RPCs and evaluation worker only. | Service role only. | Service role only; cascades with parent application/invitation. |
 | Coding source, hidden tests, and test-case results | Service role only in `proofhire_private`. | Service role only. | Service role only. | Service role only. |
@@ -422,10 +343,6 @@ Security observations:
   `ON DELETE RESTRICT`, which could make account purge fail after a recruiter
   recorded history. Migration 290002 retains events and nulls only the actor
   reference.
-- Aptitude candidate access is service-mediated; answer keys, question-level
-  scores, and raw candidate answers remain private. Keep `proofhire_private`
-  out of the API's exposed-schema list and do not grant candidates direct table
-  access.
 - The partial normalized email index can fail during rollout if normalized
   duplicates already exist. Inspect and resolve duplicates in a reviewed,
   non-destructive data migration before attempting it on an existing database.
@@ -456,11 +373,12 @@ Security observations:
 - The Go worker uses service-role REST/Storage access, validates the application
   and job workspace, retrieves private resume objects, and persists through
   screening RPCs. The worker is separate from the static frontend.
-- Aptitude authoring and candidate-session/scoring operations exist; invitation
-  delivery remains manual. Coding schemas and worker queues exist, but coding
-  candidate endpoints and a trusted execution runner are not implemented.
-  Email delivery is tracked as manual-required; no provider integration sends
-  mail. The summary view is database-only and does not compute an overall score.
+- Aptitude UI and API routes are removed. Applying the final removal migration
+  also drops prior assessment objects/data; no assessment behavior remains.
+  Coding schemas and worker queues exist, but coding candidate endpoints and a
+  trusted execution runner are not implemented. Email delivery is tracked as
+  manual-required; no provider integration sends mail. The summary view is
+  database-only and does not compute an overall score.
 
 ## Safe local validation
 
@@ -470,12 +388,12 @@ production and do not reset a database containing data to preserve.
 
 After local replay, verify (read-only) the following:
 
-1. `supabase migration list --local` shows all 20 files applied in order.
+1. `supabase migration list --local` shows all migrations applied in order.
 2. `pg_class`/`pg_attribute` and `pg_constraint` show the expected tables, data
    types, composite FKs, unique keys, and checks above.
 3. `pg_policies` and `information_schema.role_table_grants` show enabled RLS
-   and only the stated table/column grants. Confirm no anon/authenticated
-   access to `proofhire_private.aptitude_answer_keys` or `aptitude_answers`.
+   and only the stated table/column grants. Confirm no assessment tables,
+   functions, or email fields remain.
 4. `pg_proc`/`pg_get_functiondef` show safe `search_path` settings and expected
    execute grants for security-definer RPCs.
 5. `storage.buckets` shows `candidate-resumes.public = false`, a 5 MiB limit,
@@ -487,9 +405,7 @@ After local replay, verify (read-only) the following:
    viewer), including direct cross-workspace queries and RPC calls.
 8. Test screening concurrency with two worker sessions, expired leases,
    retries, stale fingerprints, and application/job workspace mismatches.
-9. Test aptitude publication, attempts with expired/revoked tokens, attempt
-   limits, private answer-key grants, and immutable published content.
-10. Test application-stage trigger/backfill behavior, interview history and
+9. Test application-stage trigger/backfill behavior, interview history and
     workspace isolation, coding version immutability and service-role lease
     transitions, email idempotency/manual status, and summary-view RLS.
 
