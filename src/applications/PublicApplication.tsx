@@ -46,6 +46,7 @@ export default function PublicApplication() {
   const [experienceYearsText, setExperienceYearsText] = useState('')
   const [experienceSummary, setExperienceSummary] = useState('')
   const [extractingResume, setExtractingResume] = useState(false)
+  const [resumeText, setResumeText] = useState('')
   const extractionRequest = useRef(0)
   const resumeInputRef = useRef<HTMLInputElement | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -136,6 +137,7 @@ export default function PublicApplication() {
     void (async () => {
       try {
         const text = await extractResumeText(file)
+        setResumeText(text.slice(0, 20000))
         if (requestId !== extractionRequest.current) return
         const profile = parseResumeProfile(
           text,
@@ -269,6 +271,7 @@ export default function PublicApplication() {
               role: experience.role.trim(),
             })),
             experience_summary: experienceSummary.trim(),
+            resume_text: resumeText.slice(0, 20000),
             extraction_reviewed: true,
           },
           p_phone: phone.trim() || null,

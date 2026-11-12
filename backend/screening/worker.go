@@ -71,11 +71,12 @@ type screeningJob struct {
 }
 
 type application struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	JobID       string  `json:"job_id"`
-	CandidateID string  `json:"candidate_id"`
-	ResumePath  *string `json:"resume_path"`
+	ID            string          `json:"id"`
+	WorkspaceID   string          `json:"workspace_id"`
+	JobID         string          `json:"job_id"`
+	CandidateID   string          `json:"candidate_id"`
+	ResumePath    *string         `json:"resume_path"`
+	ResumeProfile json.RawMessage `json:"resume_profile"`
 }
 
 type candidate struct {
@@ -254,7 +255,7 @@ func (worker *Worker) claim(ctx context.Context, workerID string) (*screeningJob
 
 func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error {
 	applications, err := worker.selectRows(ctx, "applications", url.Values{
-		"select": {"id,workspace_id,job_id,candidate_id,resume_path"},
+		"select": {"id,workspace_id,job_id,candidate_id,resume_path,resume_profile"},
 		"id":     {"eq." + queueJob.ApplicationID},
 		"limit":  {"1"},
 	})
@@ -273,7 +274,10 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 		!validID(app.JobID) || !validID(app.CandidateID) {
 		return errors.New("screening application does not have a valid resume")
 	}
-	if app.ResumePath == nil || strings.TrimSpace(*app.ResumePath) == "" {
+	// Text the candidate reviewed in the browser is authoritative and needs no
+	// external document tools, which are often absent on Windows and workers.
+	profileText, hasProfileText := reviewedResumeText(app.ResumeProfile)
+	if !hasProfileText && (app.ResumePath == nil || strings.TrimSpace(*app.ResumePath) == "") {
 		return ErrMissingResume
 	}
 
@@ -372,24 +376,33 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 		})
 	}
 
-	resumePath := *app.ResumePath
-	if !validResumePath(resumePath, app.WorkspaceID, currentJob.ID) {
-		return errors.New("resume storage path does not match the application")
+	var resumeText, resumeFormat, resumeSHA string
+	if hasProfileText {
+		resumeText = redactPersonalIdentifiers(profileText, candidateRows[0].FullName)
+		resumeFormat = "reviewed_text"
+		resumeSHA = hashResumeText(profileText)
+	} else {
+		resumePath := *app.ResumePath
+		if !validResumePath(resumePath, app.WorkspaceID, currentJob.ID) {
+			return errors.New("resume storage path does not match the application")
+		}
+		resumeContent, contentType, err := worker.downloadResume(ctx, resumePath)
+		if err != nil {
+			return err
+		}
+		result, err := worker.extractor.Extract(
+			ctx,
+			path.Base(resumePath),
+			contentType,
+			bytes.NewReader(resumeContent),
+		)
+		if err != nil {
+			return err
+		}
+		resumeText = redactPersonalIdentifiers(result.Text, candidateRows[0].FullName)
+		resumeFormat = result.Format
+		resumeSHA = result.SHA256
 	}
-	resumeContent, contentType, err := worker.downloadResume(ctx, resumePath)
-	if err != nil {
-		return err
-	}
-	result, err := worker.extractor.Extract(
-		ctx,
-		path.Base(resumePath),
-		contentType,
-		bytes.NewReader(resumeContent),
-	)
-	if err != nil {
-		return err
-	}
-	resumeText := redactPersonalIdentifiers(result.Text, candidateRows[0].FullName)
 
 	threshold := 70.0
 	if currentJob.MinimumScreeningPercentage != nil {
@@ -405,8 +418,8 @@ func (worker *Worker) process(ctx context.Context, queueJob screeningJob) error 
 	if err != nil {
 		return fmt.Errorf("evaluate deterministic screening requirements: %w", err)
 	}
-	assessment.Report.ResumeFormat = result.Format
-	assessment.Report.ResumeSHA256 = result.SHA256
+	assessment.Report.ResumeFormat = resumeFormat
+	assessment.Report.ResumeSHA256 = resumeSHA
 	criteriaRequirements := make([]map[string]any, 0, len(requirements))
 	for _, requirement := range requirements {
 		criteriaRequirements = append(criteriaRequirements, map[string]any{
@@ -662,6 +675,35 @@ func failureCode(err error) string {
 	default:
 		return "screening_failed"
 	}
+}
+
+// reviewedResumeText returns the text the candidate reviewed before submitting.
+// Short values are ignored so an empty extraction falls back to the stored file.
+const minReviewedResumeText = 200
+
+func reviewedResumeText(profile json.RawMessage) (string, bool) {
+	if len(profile) == 0 {
+		return "", false
+	}
+	var decoded struct {
+		ResumeText string `json:"resume_text"`
+	}
+	if err := json.Unmarshal(profile, &decoded); err != nil {
+		return "", false
+	}
+	text := strings.TrimSpace(decoded.ResumeText)
+	if len(text) < minReviewedResumeText {
+		return "", false
+	}
+	if len(text) > 200000 {
+		text = text[:200000]
+	}
+	return text, true
+}
+
+func hashResumeText(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 func failureReason(err error) string {

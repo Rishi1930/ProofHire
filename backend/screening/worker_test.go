@@ -323,3 +323,28 @@ func ptr(value string) *string {
 func ptrFloat(value float64) *float64 {
 	return &value
 }
+
+func TestReviewedResumeTextUsesCandidateConfirmedText(t *testing.T) {
+	long := strings.Repeat("Python and PostgreSQL experience. ", 20)
+
+	text, ok := reviewedResumeText(json.RawMessage(`{"resume_text": "` + long + `"}`))
+	if !ok {
+		t.Fatal("expected the reviewed text to be accepted")
+	}
+	if strings.TrimSpace(text) != strings.TrimSpace(long) {
+		t.Fatal("reviewed text was not returned unchanged")
+	}
+
+	if _, ok := reviewedResumeText(json.RawMessage(`{"resume_text": "too short"}`)); ok {
+		t.Fatal("short extractions must fall back to the stored document")
+	}
+	if _, ok := reviewedResumeText(json.RawMessage(`{}`)); ok {
+		t.Fatal("a profile without resume_text must not be used")
+	}
+	if _, ok := reviewedResumeText(nil); ok {
+		t.Fatal("a missing profile must not be used")
+	}
+	if got := hashResumeText("resume"); len(got) != 64 {
+		t.Fatalf("expected a sha256 hex digest, got %q", got)
+	}
+}
