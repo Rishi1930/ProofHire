@@ -111,15 +111,43 @@ type configuredRequirement struct {
 
 type serviceError struct {
 	StatusCode int
+	Detail     string
 	retryable  bool
 }
 
+// responseDetail keeps a short, single-line reason from the database so the log
+// names the cause instead of repeating a generic failure.
+func responseDetail(body []byte, secret string) string {
+	detail := strings.TrimSpace(strings.Join(strings.Fields(string(body)), " "))
+	if secret != "" {
+		// A proxy or gateway can echo the credential back in its error body.
+		detail = strings.ReplaceAll(detail, secret, "[redacted]")
+	}
+	if detail == "" {
+		return ""
+	}
+	if len(detail) > 300 {
+		detail = detail[:300] + "…"
+	}
+	return detail
+}
+
 func (serviceError *serviceError) Error() string {
+	if serviceError.StatusCode > 0 && serviceError.Detail != "" {
+		return fmt.Sprintf(
+			"Supabase screening operation failed with status %d: %s",
+			serviceError.StatusCode,
+			serviceError.Detail,
+		)
+	}
 	if serviceError.StatusCode > 0 {
 		return fmt.Sprintf(
 			"Supabase screening operation failed with status %d",
 			serviceError.StatusCode,
 		)
+	}
+	if serviceError.Detail != "" {
+		return "Supabase screening operation failed: " + serviceError.Detail
 	}
 	return "Supabase screening operation failed"
 }
@@ -568,6 +596,7 @@ func (worker *Worker) doJSON(request *http.Request) (json.RawMessage, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, &serviceError{
 			StatusCode: response.StatusCode,
+			Detail:     responseDetail(body, worker.serviceKey),
 			retryable:  retryableStatus(response.StatusCode),
 		}
 	}

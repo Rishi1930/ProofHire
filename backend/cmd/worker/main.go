@@ -62,17 +62,24 @@ func main() {
 			logger.Error("interview evaluation worker could not start", "error", err)
 			os.Exit(1)
 		}
-		go runWorker(ctx, logger, "interview evaluation worker (needs Docker)", 15*time.Second, interviewWorker.Run)
+		go runWorker(
+			ctx,
+			logger,
+			"interview evaluation worker",
+			15*time.Second,
+			interviewWorker.Run,
+			true,
+		)
 	}
 
-	go runWorker(ctx, logger, "email worker", 5*time.Second, emailWorker.Run)
+	go runWorker(ctx, logger, "email worker", 5*time.Second, emailWorker.Run, false)
 	logger.Info(
 		"screening, email and interview workers started",
 		"engine", "proofhire-deterministic-1",
 		"concurrency", environment.ScreeningConcurrency,
 		"poll_interval", environment.ScreeningPollInterval.String(),
 	)
-	runWorker(ctx, logger, "screening worker", 5*time.Second, worker.Run)
+	runWorker(ctx, logger, "screening worker", 5*time.Second, worker.Run, false)
 }
 
 // runWorker keeps one worker alive without taking the others down with it. A
@@ -84,14 +91,30 @@ func runWorker(
 	name string,
 	delay time.Duration,
 	run func(context.Context) error,
+	optional bool,
 ) {
 	wait := delay
+	reported := false
 	for ctx.Err() == nil {
 		err := run(ctx)
 		if err == nil || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return
 		}
-		logger.Error(name+" stopped; retrying", "error", err, "retry_in", wait.String())
+		switch {
+		case optional && !reported:
+			// One clear line for a feature that is optional on this host, then
+			// retry quietly; Docker may appear later.
+			logger.Warn(
+				name+" is paused until its dependency is available",
+				"error", err,
+				"impact", "interview code grading only; screening and email keep running",
+				"retry_in", wait.String(),
+			)
+			reported = true
+		case optional:
+		default:
+			logger.Error(name+" stopped; retrying", "error", err, "retry_in", wait.String())
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
