@@ -3,8 +3,20 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
-if (-not (Test-Path '.env')) {
-    Write-Host 'No .env found. Create one with:' -ForegroundColor Yellow
+$envFile = @('.env', '.env.local', 'backend/.env') |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+
+if (-not $envFile) {
+    if (Test-Path '.env.txt') {
+        Write-Host 'Found .env.txt instead of .env.' -ForegroundColor Yellow
+        Write-Host 'Notepad adds .txt to untitled files. Rename it with:' -ForegroundColor Yellow
+        Write-Host '  Rename-Item .env.txt .env' -ForegroundColor Cyan
+        exit 1
+    }
+    Write-Host 'No .env found in this folder. The fastest fix:' -ForegroundColor Yellow
+    Write-Host '  Copy-Item .env.example .env' -ForegroundColor Cyan
+    Write-Host 'then add the worker values below to the same .env file.' -ForegroundColor Yellow
     Write-Host '  SUPABASE_URL=https://<project>.supabase.co'
     Write-Host '  SUPABASE_SECRET_KEY=sb_secret_...'
     Write-Host '  EMAIL_PROVIDER=smtp'
@@ -19,7 +31,8 @@ if (-not (Test-Path '.env')) {
     exit 1
 }
 
-Get-Content '.env' | ForEach-Object {
+Write-Host "Loading $envFile" -ForegroundColor DarkGray
+Get-Content $envFile | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith('#')) { return }
     $index = $line.IndexOf('=')
@@ -31,7 +44,7 @@ Get-Content '.env' | ForEach-Object {
 
 foreach ($required in 'SUPABASE_URL', 'SUPABASE_SECRET_KEY') {
     if (-not [Environment]::GetEnvironmentVariable($required)) {
-        Write-Host "Missing $required in .env" -ForegroundColor Red
+        Write-Host "Missing $required in $envFile" -ForegroundColor Red
         exit 1
     }
 }
