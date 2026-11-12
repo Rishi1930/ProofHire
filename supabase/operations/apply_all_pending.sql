@@ -3,6 +3,9 @@
 -- Generated from:
 --   supabase/migrations/202611120002_email_delivery_runtime.sql
 --   supabase/migrations/202611120003_resume_profile_submission.sql
+--   supabase/migrations/202611120004_harden_interview_rpc_grants.sql
+--   supabase/migrations/202611120005_openings_and_pipeline_emails.sql
+--   supabase/operations/demo_interview_content.sql
 --
 -- Each section keeps its own transaction, so a failure in one leaves the other
 -- intact. Safe to run more than once.
@@ -632,3 +635,504 @@ grant execute on function public.submit_public_application(
 ) to anon, authenticated;
 
 commit;
+
+-- ---------------------------------------------------------------------------
+-- Job openings, pipeline emails, automatic closing (202611120005).
+-- ---------------------------------------------------------------------------
+
+-- Job openings, automatic pipeline emails, and closing a filled job.
+--
+-- Adds the number of positions a job is hiring for, stops public applications
+-- once a job is not open, notifies candidates when their application arrives
+-- and when they are shortlisted, and closes the job automatically once the
+-- requested number of people is hired.
+--
+-- Safe to run more than once.
+
+begin;
+
+-- 1. Positions per job.
+
+alter table public.jobs
+  add column if not exists openings integer not null default 1;
+
+alter table public.jobs
+  drop constraint if exists jobs_openings_check;
+
+alter table public.jobs
+  add constraint jobs_openings_check check (openings between 1 and 100);
+
+-- 2. A closed or paused job stops accepting public applications, whatever the
+--    submission function itself allows.
+
+create or replace function public.require_open_job_for_public_application()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  job_status text;
+begin
+  if new.source is distinct from 'public' then
+    return new;
+  end if;
+
+  select status into job_status from public.jobs where id = new.job_id;
+  if job_status is distinct from 'open' then
+    raise exception 'This job is no longer accepting applications.' using errcode = 'P0001';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.require_open_job_for_public_application()
+  from public, anon, authenticated;
+
+drop trigger if exists applications_require_open_job on public.applications;
+create trigger applications_require_open_job
+before insert on public.applications
+for each row execute function public.require_open_job_for_public_application();
+
+-- 3. Two new notification types.
+
+alter table public.email_delivery_jobs
+  drop constraint if exists email_delivery_jobs_email_type_check;
+
+alter table public.email_delivery_jobs
+  add constraint email_delivery_jobs_email_type_check
+  check (
+    email_type in (
+      'application_update',
+      'application_received',
+      'shortlisted',
+      'aptitude_invitation',
+      'coding_invitation',
+      'interview_invitation',
+      'interview_update',
+      'rejection',
+      'offer',
+      'screening_result'
+    )
+  );
+
+alter table public.email_delivery_jobs
+  drop constraint if exists email_delivery_jobs_target_check;
+
+alter table public.email_delivery_jobs
+  add constraint email_delivery_jobs_target_check check (
+    (
+      email_type = 'screening_result'
+      and screening_assessment_id is not null
+      and aptitude_invitation_id is null
+      and coding_invitation_id is null
+      and interview_record_id is null
+      and interview_session_id is null
+    )
+    or (
+      email_type = 'interview_invitation'
+      and interview_session_id is not null
+      and screening_assessment_id is null
+      and aptitude_invitation_id is null
+      and coding_invitation_id is null
+      and interview_record_id is null
+    )
+    or (
+      email_type in ('interview_invitation', 'interview_update')
+      and interview_record_id is not null
+      and screening_assessment_id is null
+      and interview_session_id is null
+      and aptitude_invitation_id is null
+      and coding_invitation_id is null
+    )
+    or (
+      email_type = 'aptitude_invitation'
+      and aptitude_invitation_id is not null
+      and screening_assessment_id is null
+      and coding_invitation_id is null
+      and interview_record_id is null
+      and interview_session_id is null
+    )
+    or (
+      email_type = 'coding_invitation'
+      and coding_invitation_id is not null
+      and screening_assessment_id is null
+      and aptitude_invitation_id is null
+      and interview_record_id is null
+      and interview_session_id is null
+    )
+    or (
+      email_type in (
+        'application_update',
+        'application_received',
+        'shortlisted',
+        'rejection',
+        'offer'
+      )
+      and screening_assessment_id is null
+      and aptitude_invitation_id is null
+      and coding_invitation_id is null
+      and interview_record_id is null
+      and interview_session_id is null
+    )
+  );
+
+-- 4. Queue the two notifications as the application moves through the pipeline.
+
+create or replace function public.enqueue_application_pipeline_email()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  candidate_row public.candidates%rowtype;
+  email_kind text;
+begin
+  if tg_op = 'INSERT' then
+    if new.source is distinct from 'public' then
+      return new;
+    end if;
+    email_kind := 'application_received';
+  elsif new.status = 'shortlisted' and old.status is distinct from 'shortlisted' then
+    email_kind := 'shortlisted';
+  else
+    return new;
+  end if;
+
+  select candidate.*
+  into candidate_row
+  from public.candidates candidate
+  where candidate.workspace_id = new.workspace_id
+    and candidate.id = new.candidate_id;
+
+  if candidate_row.email is null or btrim(candidate_row.email) = '' then
+    return new;
+  end if;
+
+  insert into public.email_delivery_jobs (
+    workspace_id,
+    application_id,
+    email_type,
+    template_key,
+    recipient_email,
+    idempotency_key,
+    status,
+    attempts,
+    max_attempts,
+    template_data
+  )
+  values (
+    new.workspace_id,
+    new.id,
+    email_kind,
+    email_kind || '-v1',
+    candidate_row.email,
+    email_kind || ':' || new.id::text,
+    'queued',
+    0,
+    5,
+    '{}'::jsonb
+  )
+  on conflict (idempotency_key) do nothing;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.enqueue_application_pipeline_email()
+  from public, anon, authenticated;
+
+drop trigger if exists applications_pipeline_email on public.applications;
+create trigger applications_pipeline_email
+after insert or update of status on public.applications
+for each row execute function public.enqueue_application_pipeline_email();
+
+-- 5. Close the job once the requested number of people is hired.
+
+create or replace function public.close_job_when_filled()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  hired_count integer;
+  opening_count integer;
+begin
+  if new.status is distinct from 'hired' then
+    return new;
+  end if;
+
+  select count(*)
+  into hired_count
+  from public.applications application
+  where application.workspace_id = new.workspace_id
+    and application.job_id = new.job_id
+    and application.status = 'hired';
+
+  select coalesce(openings, 1)
+  into opening_count
+  from public.jobs
+  where id = new.job_id;
+
+  if hired_count >= opening_count then
+    update public.jobs
+    set status = 'closed',
+        updated_at = now()
+    where id = new.job_id
+      and status is distinct from 'closed';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.close_job_when_filled()
+  from public, anon, authenticated;
+
+drop trigger if exists applications_close_job_when_filled on public.applications;
+create trigger applications_close_job_when_filled
+after update of status on public.applications
+for each row execute function public.close_job_when_filled();
+
+-- 6. Context for the two new messages.
+
+create or replace function public.get_email_delivery_context(
+  target_job_id uuid,
+  target_lease_token uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  delivery_row public.email_delivery_jobs%rowtype;
+  context_value jsonb;
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'Service role is required.' using errcode = '42501';
+  end if;
+
+  select delivery.*
+  into delivery_row
+  from public.email_delivery_jobs delivery
+  where delivery.id = target_job_id
+    and delivery.status = 'processing'
+    and delivery.lease_token = target_lease_token
+    and delivery.locked_until >= now();
+
+  if not found then
+    raise exception 'Email delivery lease is no longer valid.' using errcode = 'P0001';
+  end if;
+
+  if delivery_row.email_type in ('application_received', 'shortlisted') then
+    select jsonb_build_object(
+      'candidate_name', candidate.full_name,
+      'job_title', job.title,
+      'company_name', workspace.name,
+      'openings', coalesce(job.openings, 1)
+    )
+    into context_value
+    from public.applications application
+    join public.candidates candidate
+      on candidate.workspace_id = application.workspace_id
+     and candidate.id = application.candidate_id
+    join public.jobs job
+      on job.workspace_id = application.workspace_id
+     and job.id = application.job_id
+    join public.workspaces workspace
+      on workspace.id = application.workspace_id
+    where application.id = delivery_row.application_id;
+  elsif delivery_row.email_type = 'screening_result' then
+    select jsonb_build_object(
+      'candidate_name', candidate.full_name,
+      'job_title', job.title,
+      'company_name', workspace.name,
+      'passed', coalesce(assessment.report ->> 'threshold_met', 'false') = 'true'
+    )
+    into context_value
+    from public.application_screening_assessments assessment
+    join public.applications application
+      on application.workspace_id = assessment.workspace_id
+     and application.id = assessment.application_id
+    join public.candidates candidate
+      on candidate.workspace_id = application.workspace_id
+     and candidate.id = application.candidate_id
+    join public.jobs job
+      on job.workspace_id = application.workspace_id
+     and job.id = application.job_id
+    join public.workspaces workspace
+      on workspace.id = application.workspace_id
+    where assessment.id = delivery_row.screening_assessment_id;
+  elsif delivery_row.email_type = 'interview_invitation' then
+    select jsonb_build_object(
+      'candidate_name', candidate.full_name,
+      'job_title', job.title,
+      'company_name', workspace.name,
+      'interview_type', coalesce(
+        nullif(delivery_row.template_data ->> 'interview_type', ''),
+        'Technical interview'
+      ),
+      'duration_seconds', coalesce(
+        (delivery_row.template_data ->> 'duration_seconds')::integer,
+        0
+      ),
+      'interview_path', delivery_row.template_data ->> 'interview_path'
+    )
+    into context_value
+    from public.interview_sessions session_row
+    join public.applications application
+      on application.workspace_id = session_row.workspace_id
+     and application.id = session_row.application_id
+    join public.candidates candidate
+      on candidate.workspace_id = application.workspace_id
+     and candidate.id = application.candidate_id
+    join public.jobs job
+      on job.workspace_id = session_row.workspace_id
+     and job.id = session_row.job_id
+    join public.workspaces workspace
+      on workspace.id = session_row.workspace_id
+    where session_row.id = delivery_row.interview_session_id;
+  else
+    raise exception 'Email delivery type is not supported by this worker.'
+      using errcode = 'P0001';
+  end if;
+
+  if context_value is null then
+    raise exception 'Email delivery context is unavailable.' using errcode = 'P0001';
+  end if;
+  return context_value;
+end;
+$$;
+
+revoke all on function public.get_email_delivery_context(uuid, uuid)
+  from public, anon, authenticated;
+grant execute on function public.get_email_delivery_context(uuid, uuid)
+  to service_role;
+
+commit;
+
+
+-- ---------------------------------------------------------------------------
+-- Demo interview content (one practice challenge + two general questions per job).
+-- ---------------------------------------------------------------------------
+
+-- Demo interview content for investor walkthroughs.
+--
+-- Only the interview/coding content is demonstration material: job-specific
+-- questions and graded coding tasks cannot be authored automatically for an
+-- arbitrary job, so every workspace gets one published practice challenge and
+-- a couple of general questions. Everything else in the pipeline (screening,
+-- shortlisting, emails, stage counts, auto-closing jobs) is real.
+--
+-- Safe to run more than once; it only fills what is missing.
+
+do $$
+declare
+  ws record;
+  job_rec record;
+  challenge_id uuid;
+  demo_challenge_id uuid;
+  version_id uuid;
+begin
+  for ws in select distinct workspace_id from public.jobs loop
+    for job_rec in
+      select id from public.jobs where workspace_id = ws.workspace_id order by created_at
+    loop
+      if not exists (
+        select 1 from public.interview_questions where job_id = job_rec.id
+      ) then
+        insert into public.interview_questions (
+          workspace_id, job_id, display_order, prompt, category, expected_keywords, max_points
+        )
+        values
+          (
+            ws.workspace_id, job_rec.id, 1,
+            'Walk me through how you would build a page that loads data from several APIs. Where does state live, and how do you avoid unnecessary re-renders?',
+            'frontend',
+            array['component', 'state', 'hook', 'memo', 'effect'],
+            5
+          ),
+          (
+            ws.workspace_id, job_rec.id, 2,
+            'How would you keep a database-backed endpoint fast as its table grows to millions of rows? Cover indexes, pagination and query plans.',
+            'backend',
+            array['index', 'pagination', 'query', 'plan', 'cache'],
+            5
+          );
+      end if;
+
+      select id into challenge_id
+      from public.coding_challenges
+      where workspace_id = ws.workspace_id and title = 'Sum of integers'
+      limit 1;
+
+      demo_challenge_id := challenge_id;
+
+      if demo_challenge_id is null then
+        insert into public.coding_challenges (workspace_id, title, description)
+        values (
+          ws.workspace_id,
+          'Sum of integers',
+          'Read whitespace-separated integers from standard input and print their sum.'
+        )
+        returning id into challenge_id;
+        demo_challenge_id := challenge_id;
+      end if;
+
+      select versions.id into version_id
+      from public.coding_challenge_versions versions
+      where versions.challenge_id = demo_challenge_id
+      order by versions.version_number desc
+      limit 1;
+
+      if version_id is null then
+        insert into public.coding_challenge_versions (
+          workspace_id,
+          challenge_id,
+          version_number,
+          prompt,
+          difficulty,
+          supported_languages,
+          starter_code,
+          points,
+          max_execution_seconds,
+          version_status
+        )
+        values (
+          ws.workspace_id,
+          demo_challenge_id,
+          1,
+          E'Read all integers from standard input (whitespace separated) and print their sum.\n\nExample\n-------\nInput: 2 3 5\nOutput: 10',
+          'beginner',
+          array['python', 'javascript', 'go'],
+          jsonb_build_object(
+            'python', E'import sys\n\nnumbers = [int(value) for value in sys.stdin.read().split()]\nprint(sum(numbers))\n',
+            'javascript', E'const input = require("fs").readFileSync(0, "utf8").trim();\nconst numbers = input ? input.split(/\\s+/).map(Number) : [];\nconsole.log(numbers.reduce((total, value) => total + value, 0));\n',
+            'go', E'package main\n\nimport (\n\t"bufio"\n\t"fmt"\n\t"os"\n)\n\nfunc main() {\n\tscanner := bufio.NewScanner(os.Stdin)\n\tscanner.Split(bufio.ScanWords)\n\ttotal := 0\n\tfor scanner.Scan() {\n\t\tvar value int\n\t\tfmt.Sscan(scanner.Text(), &value)\n\t\ttotal += value\n\t}\n\tfmt.Println(total)\n}\n'
+          ),
+          10,
+          10,
+          'draft'
+        )
+        returning id into version_id;
+
+        insert into proofhire_private.coding_test_cases (
+          workspace_id, challenge_version_id, display_order, input_text, expected_output, is_hidden, points
+        )
+        values
+          (ws.workspace_id, version_id, 1, '2 3 5', '10', false, 1),
+          (ws.workspace_id, version_id, 2, '-4 10 0 7', '13', true, 2),
+          (ws.workspace_id, version_id, 3, '1000000 2000000 3000000', '6000000', true, 2);
+
+        update public.coding_challenge_versions
+        set version_status = 'published', published_at = now()
+        where id = version_id;
+      end if;
+    end loop;
+  end loop;
+end;
+$$;

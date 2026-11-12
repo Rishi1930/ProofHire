@@ -160,6 +160,31 @@ func (worker *Worker) deliverOne(ctx context.Context) error {
 		if renderErr != nil {
 			return worker.fail(ctx, job, "email_context_invalid", false)
 		}
+	case "application_received", "shortlisted":
+		var data deliveryContext
+		if err := worker.call(ctx, "get_email_delivery_context", map[string]any{
+			"target_job_id":      job.ID,
+			"target_lease_token": job.LeaseToken,
+		}, &data); err != nil {
+			return worker.fail(ctx, job, "email_context_unavailable", true)
+		}
+		var renderErr error
+		if job.EmailType == "shortlisted" {
+			rendered, renderErr = RenderShortlisted(Shortlisted{
+				CandidateName: data.CandidateName,
+				JobTitle:      data.JobTitle,
+				CompanyName:   data.CompanyName,
+			})
+		} else {
+			rendered, renderErr = RenderApplicationReceived(ApplicationReceived{
+				CandidateName: data.CandidateName,
+				JobTitle:      data.JobTitle,
+				CompanyName:   data.CompanyName,
+			})
+		}
+		if renderErr != nil {
+			return worker.fail(ctx, job, "email_context_invalid", false)
+		}
 	case "interview_invitation":
 		var data deliveryContext
 		if err := worker.call(ctx, "get_email_delivery_context", map[string]any{

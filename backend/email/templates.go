@@ -21,6 +21,18 @@ type InterviewInvitation struct {
 	InterviewURL  string
 }
 
+type ApplicationReceived struct {
+	CandidateName string
+	JobTitle      string
+	CompanyName   string
+}
+
+type Shortlisted struct {
+	CandidateName string
+	JobTitle      string
+	CompanyName   string
+}
+
 type ScreeningResult struct {
 	CandidateName string
 	JobTitle      string
@@ -90,6 +102,56 @@ A few helpful reminders:
 ProofHire · A clearer way to hire
 `))
 
+var applicationReceivedHTML = template.Must(template.New("application-received").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Application received</title></head>
+<body style="margin:0;background:#f4f5fb;font-family:Arial,Helvetica,sans-serif;color:#25243a">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f5fb;padding:28px 12px"><tr><td align="center">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #e8e8f0;border-radius:16px;overflow:hidden">
+<tr><td style="padding:24px 32px;background:#17152c;color:#fff;font-size:20px;font-weight:700">ProofHire</td></tr>
+<tr><td style="padding:32px"><p style="margin:0 0 12px;color:#6257d9;font-size:12px;font-weight:700;letter-spacing:1px">APPLICATION RECEIVED</p>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25">Hello {{.CandidateName}},</h1>
+<p style="margin:0 0 20px;line-height:1.65;color:#55566a">We received your application for <strong>{{.JobTitle}}</strong> at <strong>{{.CompanyName}}</strong>. Thank you for taking the time to apply.</p>
+<p style="margin:0 0 20px;line-height:1.65;color:#55566a">Your resume is being reviewed against the role requirements. If your profile matches, you will receive a shortlist email with the next step, which is a technical interview you can complete online.</p>
+<p style="margin:24px 0 0;color:#77788a;font-size:12px;line-height:1.6">No action is needed right now. Please contact the recruiting team if you have questions.</p>
+</td></tr><tr><td style="padding:18px 32px;background:#fafaff;border-top:1px solid #eeeef5;color:#77788a;font-size:12px">ProofHire · A clearer way to hire</td></tr></table>
+</td></tr></table></body></html>`))
+
+var applicationReceivedText = texttemplate.Must(texttemplate.New("application-received-text").Parse(`Hello {{.CandidateName}},
+
+We received your application for {{.JobTitle}} at {{.CompanyName}}. Thank you for taking the time to apply.
+
+Your resume is being reviewed against the role requirements. If your profile matches, you will receive a shortlist email with the next step, which is a technical interview you can complete online.
+
+No action is needed right now. Please contact the recruiting team if you have questions.
+
+ProofHire · A clearer way to hire
+`))
+
+var shortlistedHTML = template.Must(template.New("shortlisted").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>You are shortlisted</title></head>
+<body style="margin:0;background:#f4f5fb;font-family:Arial,Helvetica,sans-serif;color:#25243a">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f5fb;padding:28px 12px"><tr><td align="center">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #e8e8f0;border-radius:16px;overflow:hidden">
+<tr><td style="padding:24px 32px;background:#17152c;color:#fff;font-size:20px;font-weight:700">ProofHire</td></tr>
+<tr><td style="padding:32px"><p style="margin:0 0 12px;color:#6257d9;font-size:12px;font-weight:700;letter-spacing:1px">SHORTLISTED</p>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25">Congratulations {{.CandidateName}},</h1>
+<p style="margin:0 0 20px;line-height:1.65;color:#55566a">Your application for <strong>{{.JobTitle}}</strong> at <strong>{{.CompanyName}}</strong> has been shortlisted. Your resume matched the role requirements well.</p>
+<p style="margin:0 0 20px;line-height:1.65;color:#55566a">The next step is a technical interview: a short set of role questions followed by a coding task in your chosen language. A separate invitation email with your personal interview link follows shortly. The link is single use and time limited.</p>
+<p style="margin:24px 0 0;color:#77788a;font-size:12px;line-height:1.6">Tip: take the interview on a laptop or desktop in a quiet place. It runs in full screen and the timer starts when you begin.</p>
+</td></tr><tr><td style="padding:18px 32px;background:#fafaff;border-top:1px solid #eeeef5;color:#77788a;font-size:12px">ProofHire · A clearer way to hire</td></tr></table>
+</td></tr></table></body></html>`))
+
+var shortlistedText = texttemplate.Must(texttemplate.New("shortlisted-text").Parse(`Congratulations {{.CandidateName}},
+
+Your application for {{.JobTitle}} at {{.CompanyName}} has been shortlisted. Your resume matched the role requirements well.
+
+The next step is a technical interview: a short set of role questions followed by a coding task in your chosen language. A separate invitation email with your personal interview link follows shortly. The link is single use and time limited.
+
+Tip: take the interview on a laptop or desktop in a quiet place. It runs in full screen and the timer starts when you begin.
+
+ProofHire · A clearer way to hire
+`))
+
 type interviewTemplateData struct {
 	CandidateName string
 	JobTitle      string
@@ -110,6 +172,36 @@ func RenderScreeningResult(input ScreeningResult) (Rendered, error) {
 	}
 	subject := "Application update for " + input.JobTitle
 	return render(subject, screeningResultHTML, screeningResultText, input)
+}
+
+func RenderApplicationReceived(input ApplicationReceived) (Rendered, error) {
+	input.CandidateName = strings.TrimSpace(input.CandidateName)
+	input.JobTitle = strings.TrimSpace(input.JobTitle)
+	input.CompanyName = strings.TrimSpace(input.CompanyName)
+	if input.CandidateName == "" || input.JobTitle == "" || input.CompanyName == "" {
+		return Rendered{}, errors.New("incomplete application details")
+	}
+	return render(
+		"Application received for "+input.JobTitle,
+		applicationReceivedHTML,
+		applicationReceivedText,
+		input,
+	)
+}
+
+func RenderShortlisted(input Shortlisted) (Rendered, error) {
+	input.CandidateName = strings.TrimSpace(input.CandidateName)
+	input.JobTitle = strings.TrimSpace(input.JobTitle)
+	input.CompanyName = strings.TrimSpace(input.CompanyName)
+	if input.CandidateName == "" || input.JobTitle == "" || input.CompanyName == "" {
+		return Rendered{}, errors.New("incomplete shortlist details")
+	}
+	return render(
+		"You are shortlisted for "+input.JobTitle,
+		shortlistedHTML,
+		shortlistedText,
+		input,
+	)
 }
 
 func RenderInterviewInvitation(input InterviewInvitation) (Rendered, error) {

@@ -44,6 +44,7 @@ export type Job = {
   preferred_skills: string[]
   minimum_experience: number | null
   minimum_screening_percentage: number
+  openings: number
   screening_weights: {
     mandatory: number
     preferred: number
@@ -63,6 +64,7 @@ type JobForm = {
   required_skills: string
   preferred_skills: string
   minimum_experience: string
+  openings: string
   minimum_screening_percentage: string
   mandatory_weight: string
   preferred_weight: string
@@ -81,6 +83,7 @@ const emptyForm: JobForm = {
   required_skills: '',
   preferred_skills: '',
   minimum_experience: '',
+  openings: '1',
   minimum_screening_percentage: '70',
   mandatory_weight: '2',
   preferred_weight: '1',
@@ -274,7 +277,7 @@ export default function Jobs() {
         const { data, error } = await supabase
           .from('jobs')
           .select(
-            'id, workspace_id, title, department, location, employment_type, workplace_type, description, required_skills, preferred_skills, minimum_experience, minimum_screening_percentage, screening_weights, status, created_at',
+            'id, workspace_id, title, department, location, employment_type, workplace_type, description, required_skills, preferred_skills, minimum_experience, minimum_screening_percentage, openings, screening_weights, status, created_at',
           )
           .eq('workspace_id', workspaceResult.workspaceId)
           .order('created_at', { ascending: false })
@@ -336,6 +339,7 @@ export default function Jobs() {
         job.minimum_experience === null || job.minimum_experience === 0
           ? ''
           : String(job.minimum_experience),
+      openings: String(job.openings ?? 1),
       minimum_screening_percentage: String(job.minimum_screening_percentage ?? 70),
       mandatory_weight: String(job.screening_weights?.mandatory ?? 2),
       preferred_weight: String(job.screening_weights?.preferred ?? 1),
@@ -390,6 +394,11 @@ export default function Jobs() {
       )
       return
     }
+    const openingsValue = form.openings.trim() === '' ? 1 : Number(form.openings)
+    if (!Number.isInteger(openingsValue) || openingsValue < 1 || openingsValue > 100) {
+      setErrorMessage('Number of positions must be a whole number between 1 and 100.')
+      return
+    }
     if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
       setErrorMessage('Minimum screening percentage must be between 0 and 100.')
       return
@@ -424,6 +433,7 @@ export default function Jobs() {
       required_skills: parseSkills(form.required_skills),
       preferred_skills: parseSkills(form.preferred_skills),
       minimum_experience: minimumExperience,
+      openings: openingsValue,
       minimum_screening_percentage: threshold,
       screening_weights: screeningWeights,
       status: form.status,
@@ -1015,6 +1025,7 @@ export default function Jobs() {
                   </span>
                   <div className="job-pipeline-summary" aria-label={`Application metrics for ${job.title}`}>
                     {[
+                      ['Positions', job.openings ?? 1],
                       ['Applications', jobApplications.length],
                       ['New', jobApplications.filter((item) => item.status === 'new').length],
                       ['Shortlisted', jobApplications.filter((item) => item.status === 'shortlisted').length],
@@ -1251,6 +1262,28 @@ export default function Jobs() {
               />
               <p className="form-help" id="job-experience-help">
                 Leave blank if there is no minimum experience requirement.
+              </p>
+
+              <label className="field-label" htmlFor="job-openings">
+                Number of positions
+              </label>
+              <input
+                id="job-openings"
+                className="form-input"
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                inputMode="numeric"
+                value={form.openings}
+                onChange={(event) =>
+                  setForm({ ...form, openings: event.target.value })
+                }
+                placeholder="e.g. 2"
+                aria-describedby="job-openings-help"
+              />
+              <p className="form-help" id="job-openings-help">
+                The job closes automatically once this many candidates are hired.
               </p>
 
               <label className="field-label" htmlFor="job-screening-threshold">
