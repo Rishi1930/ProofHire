@@ -28,6 +28,13 @@ export type ApplicationRecord = {
   applied_at: string | null
   created_at: string
   resume_path: string | null
+  resume_profile?: {
+    education?: string
+    skills?: string[]
+    experience_years?: number | null
+    experience?: Array<{ company: string; role: string }>
+    experience_summary?: string
+  } | null
   resume_available?: boolean
   candidates: {
     full_name: string
@@ -259,28 +266,29 @@ export async function getWorkspaceApplications(
   for (let start = 0; ; start += pageSize) {
     const { data, error } = await client
       .from('applications')
-.select(`
-  id,
-  workspace_id,
-  candidate_id,
-  job_id,
-  status,
-  source,
-  applied_at,
-  created_at,
-  resume_path,
-  candidates!applications_candidate_id_fkey(
-    full_name,
-    email,
-    phone,
-    linkedin_url,
-    resume_path
-  ),
-  jobs!applications_job_id_fkey(
-    title,
-    department
-  )
-`)
+  .select(`
+    id,
+    workspace_id,
+    candidate_id,
+    job_id,
+    status,
+    source,
+    applied_at,
+    created_at,
+    resume_path,
+    resume_profile,
+    candidates!applications_candidate_id_fkey(
+      full_name,
+      email,
+      phone,
+      linkedin_url,
+      resume_path
+    ),
+    jobs!applications_job_id_fkey(
+      title,
+      department
+    )
+  `)
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })
       .range(start, start + pageSize - 1)

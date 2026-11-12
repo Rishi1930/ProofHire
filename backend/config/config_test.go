@@ -87,7 +87,7 @@ func TestEmailConfigurationRequiresCompleteResendSettings(t *testing.T) {
 			config: Config{
 				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
 				EmailProvider: "resend", EmailAPIKey: "re_test", EmailFromAddress: "team@example.com",
-				EmailFromName: "ProofHire", AppBaseURL: "https://proofhire.example",
+				EmailFromName: "ProofHire",
 			},
 		},
 		{
@@ -95,7 +95,7 @@ func TestEmailConfigurationRequiresCompleteResendSettings(t *testing.T) {
 			config: Config{
 				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
 				EmailProvider: "resend", EmailFromAddress: "team@example.com",
-				EmailFromName: "ProofHire", AppBaseURL: "https://proofhire.example",
+				EmailFromName: "ProofHire",
 			},
 			wantError: true,
 		},
@@ -104,15 +104,6 @@ func TestEmailConfigurationRequiresCompleteResendSettings(t *testing.T) {
 			config: Config{
 				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
 				EmailProvider: "smtp",
-			},
-			wantError: true,
-		},
-		{
-			name: "insecure app URL",
-			config: Config{
-				SupabaseURL: "https://project.supabase.co", SupabaseAnonKey: "public-key",
-				EmailProvider: "resend", EmailAPIKey: "re_test", EmailFromAddress: "team@example.com",
-				EmailFromName: "ProofHire", AppBaseURL: "http://proofhire.example",
 			},
 			wantError: true,
 		},

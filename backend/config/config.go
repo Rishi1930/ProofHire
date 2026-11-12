@@ -192,11 +192,11 @@ func (config Config) ValidateEmail() error {
 		if config.EmailAPIKey == "" {
 			return fmt.Errorf("EMAIL_API_KEY is required")
 		}
-		if err := validatePublicHTTPSURL(config.AppBaseURL, "APP_BASE_URL"); err != nil {
-			return err
-		}
 	default:
 		return fmt.Errorf("EMAIL_PROVIDER must be smtp or resend")
+	}
+	if err := validateAppBaseURL(config.AppBaseURL); err != nil {
+		return err
 	}
 	if !validEmailAddress(config.EmailFromAddress) {
 		return fmt.Errorf("EMAIL_FROM_ADDRESS must be a valid email address")
@@ -214,6 +214,29 @@ func validatePublicHTTPSURL(value, name string) error {
 		return fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", name)
 	}
 	return nil
+}
+
+// validateAppBaseURL accepts an empty value, because links are only built when
+// a notification is sent. HTTPS is required everywhere except loopback, so the
+// worker can be run locally against `npm run dev`.
+func validateAppBaseURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("APP_BASE_URL must be an absolute URL without credentials, query, or fragment")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+		return nil
+	}
+	return fmt.Errorf("APP_BASE_URL must use HTTPS; plain HTTP is only allowed on localhost")
 }
 
 func validEmailAddress(value string) bool {

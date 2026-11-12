@@ -7,16 +7,6 @@ with expected_objects(schema_name, object_name, object_kind) as (
     ('public', 'job_screening_criteria', 'table'),
     ('public', 'application_screening_jobs', 'table'),
     ('public', 'application_screening_assessments', 'table'),
-    ('public', 'aptitude_tests', 'table'),
-    ('public', 'aptitude_test_versions', 'table'),
-    ('public', 'aptitude_questions', 'table'),
-    ('public', 'aptitude_question_options', 'table'),
-    ('public', 'aptitude_invitations', 'table'),
-    ('public', 'aptitude_attempts', 'table'),
-    ('public', 'aptitude_answers', 'table'),
-    ('public', 'aptitude_monitoring_events', 'table'),
-    ('public', 'job_aptitude_assessments', 'table'),
-    ('public', 'aptitude_attempt_questions', 'table'),
     ('public', 'coding_challenges', 'table'),
     ('public', 'coding_challenge_versions', 'table'),
     ('public', 'job_coding_assessments', 'table'),
@@ -33,8 +23,6 @@ with expected_objects(schema_name, object_name, object_kind) as (
     ('public', 'application_stage_history', 'table'),
     ('public', 'email_delivery_jobs', 'table'),
     ('public', 'email_delivery_attempts', 'table'),
-    ('proofhire_private', 'aptitude_answer_keys', 'table'),
-    ('proofhire_private', 'aptitude_answer_scores', 'table'),
     ('proofhire_private', 'coding_test_cases', 'table'),
     ('proofhire_private', 'coding_submission_sources', 'table'),
     ('proofhire_private', 'coding_test_case_results', 'table'),
@@ -62,11 +50,6 @@ where routine.routine_schema = 'public'
     'claim_application_screening_job',
     'complete_application_screening_job',
     'fail_application_screening_job',
-    'create_aptitude_invitation',
-    'get_aptitude_candidate_session',
-    'start_aptitude_candidate_attempt',
-    'save_aptitude_candidate_answer',
-    'submit_aptitude_candidate_attempt',
     'claim_coding_evaluation_jobs',
     'complete_coding_evaluation_job',
     'claim_email_delivery_jobs',
@@ -82,10 +65,41 @@ where trigger_schema = 'public'
     'applications_capture_resume_version',
     'applications_queue_screening',
     'interview_records_capture_schedule_history',
-    'coding_submissions_queue_evaluation',
-    'aptitude_invitations_create_email_delivery'
+    'coding_submissions_queue_evaluation'
   )
 order by object_kind, object_name;
+
+-- These checks must return no rows after aptitude removal.
+select namespace.nspname as schema_name, relation.relname as object_name
+from pg_class relation
+join pg_namespace namespace on namespace.oid = relation.relnamespace
+where namespace.nspname in ('public', 'proofhire_private')
+  and relation.relname ilike '%aptitude%'
+union all
+select routine.routine_schema, routine.routine_name
+from information_schema.routines routine
+where routine.routine_schema in ('public', 'proofhire_private')
+  and routine.routine_name ilike '%aptitude%'
+union all
+select namespace.nspname, routine_proc.proname
+from pg_proc routine_proc
+join pg_namespace namespace on namespace.oid = routine_proc.pronamespace
+where namespace.nspname in ('public', 'proofhire_private')
+  and routine_proc.prokind = 'f'
+  and routine_proc.prosrc ilike '%aptitude%'
+union all
+select table_schema, table_name || '.' || column_name
+from information_schema.columns
+where table_schema in ('public', 'proofhire_private')
+  and column_name ilike '%aptitude%'
+order by schema_name, object_name;
+
+-- The interview/coding/screening email queue must not retain aptitude links.
+select table_name, column_name
+from information_schema.columns
+where table_schema = 'public'
+  and table_name = 'email_delivery_jobs'
+  and column_name = 'aptitude_invitation_id';
 
 -- Confirm core policies were narrowed without removing workspace read access.
 select schemaname, tablename, policyname, cmd, roles

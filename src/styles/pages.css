@@ -1588,6 +1588,45 @@
   color: #a1a6b5;
 }
 
+.resume-experience-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.resume-experience-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #dfe2ec;
+  border-radius: 9px;
+  outline: none;
+  background: #fff;
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.resume-experience-row input:focus {
+  border-color: #9188f3;
+  box-shadow: 0 0 0 4px rgb(81 70 229 / 9%);
+}
+
+.text-button {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .resume-upload-area {
   display: flex;
   min-height: 150px;
@@ -1672,6 +1711,12 @@
   font-size: 10px;
   line-height: 1.6;
   text-align: center;
+}
+
+@media (max-width: 520px) {
+  .resume-experience-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .application-success-icon {
@@ -3638,14 +3683,12 @@
   background: #fafaff;
 }
 
-.share-profile-preview strong,
-.external-share-unavailable strong {
+.share-profile-preview strong {
   color: var(--color-text);
   font-size: 11px;
 }
 
-.share-profile-preview p,
-.external-share-unavailable p {
+.share-profile-preview p {
   margin: 6px 0 0;
   color: var(--color-text-secondary);
   font-size: 10px;
@@ -3655,14 +3698,6 @@
 .share-profile-actions {
   flex-wrap: wrap;
   margin-top: 12px;
-}
-
-.external-share-unavailable {
-  padding: 11px 12px;
-  margin-top: 12px;
-  border: 1px solid #ece5ce;
-  border-radius: 9px;
-  background: #fffdf6;
 }
 
 .screening-assessment-list {
@@ -3831,200 +3866,5 @@
   .export-menu-popover {
     right: auto;
     left: 0;
-  }
-}
-
-.aptitude-authoring {
-  display: grid;
-  gap: 20px;
-}
-
-.aptitude-authoring h2,
-.aptitude-question-form h3 {
-  margin: 0;
-}
-
-.aptitude-settings-grid,
-.aptitude-builder-controls,
-.aptitude-invite-form {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.aptitude-builder-controls {
-  grid-template-columns: repeat(2, minmax(170px, 1fr));
-}
-
-.aptitude-question-form,
-.aptitude-invite-link {
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-background);
-}
-
-.aptitude-version-summary,
-.aptitude-question-card,
-.aptitude-result-card {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.aptitude-version-summary > div,
-.aptitude-question-card > div,
-.aptitude-result-card > div {
-  display: grid;
-  gap: 6px;
-}
-
-.aptitude-version-summary span,
-.aptitude-question-card p,
-.aptitude-result-card p {
-  color: var(--color-text-secondary);
-  margin: 0;
-}
-
-.aptitude-question-card ul {
-  margin: 4px 0 0;
-  padding-left: 20px;
-}
-
-.aptitude-question-list,
-.aptitude-results-list {
-  display: grid;
-}
-
-.aptitude-invite-link p {
-  margin: 0;
-  color: var(--color-text-secondary);
-}
-
-.candidate-assessment-shell {
-  min-height: 100vh;
-  display: grid;
-  place-items: start center;
-  padding: clamp(20px, 5vw, 64px) 16px;
-  background: var(--color-background);
-}
-
-.candidate-assessment-card {
-  width: min(100%, 900px);
-  display: grid;
-  gap: 24px;
-  padding: clamp(20px, 4vw, 40px);
-  border: 1px solid var(--color-border);
-  border-radius: 18px;
-  background: var(--color-surface);
-  box-shadow: 0 16px 48px rgb(15 23 42 / 8%);
-}
-
-.candidate-assessment-header h1 {
-  margin: 8px 0;
-}
-
-.candidate-assessment-header > p {
-  color: var(--color-text-secondary);
-}
-
-.candidate-assessment-start,
-.candidate-assessment-result {
-  display: grid;
-  gap: 18px;
-}
-
-.aptitude-monitoring-disclosure,
-.candidate-assessment-timer {
-  padding: 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-background);
-}
-
-.candidate-consent,
-.candidate-question-options label {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.candidate-assessment-timer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  position: sticky;
-  top: 8px;
-  z-index: 1;
-}
-
-.candidate-assessment-timer strong {
-  font-size: 1.25rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.candidate-assessment-questions {
-  display: grid;
-  gap: 18px;
-}
-
-.candidate-question {
-  min-width: 0;
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-}
-
-.candidate-question legend {
-  max-width: 100%;
-  padding: 0 6px;
-  font-weight: 650;
-}
-
-.candidate-question legend span {
-  display: block;
-  margin-top: 5px;
-  color: var(--color-text-secondary);
-  font-size: 0.85rem;
-  font-weight: 400;
-}
-
-.candidate-question-options {
-  display: grid;
-  gap: 12px;
-}
-
-.candidate-question-options label span {
-  min-width: 0;
-}
-
-.candidate-assessment-score {
-  margin: 0;
-  font-size: clamp(2rem, 8vw, 4rem);
-  font-weight: 750;
-}
-
-@media (max-width: 720px) {
-  .aptitude-settings-grid,
-  .aptitude-builder-controls,
-  .aptitude-invite-form {
-    grid-template-columns: 1fr;
-  }
-
-  .aptitude-version-summary,
-  .aptitude-question-card,
-  .aptitude-result-card {
-    flex-direction: column;
-  }
-
-  .candidate-assessment-card {
-    padding: 20px;
   }
 }
