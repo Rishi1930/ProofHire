@@ -117,7 +117,7 @@ select
 select c.relname as table_name, c.relrowsecurity as rls_enabled
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public' and c.relname like 'interview_%'
+where n.nspname = 'public' and c.relkind = 'r' and c.relname like 'interview_%'
 order by c.relname;
 
 -- Candidate RPCs must be callable by anon (token mediated) but the worker RPCs
