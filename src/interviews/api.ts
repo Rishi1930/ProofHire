@@ -226,6 +226,16 @@ export async function createInterviewSession(input: {
   return data as { session_id: string; token: string; questions: number; challenges: number }
 }
 
+export async function sendInterviewInvitation(sessionId: string, token: string) {
+  const client = requireClient()
+  const { data, error } = await client.rpc('send_interview_invitation', {
+    p_session_id: sessionId,
+    p_token: token,
+  })
+  if (error) throw new Error(message(error, 'The invitation email could not be queued.'))
+  return data as { queued: boolean; delivery_id: string | null; recipient: string }
+}
+
 export async function loadSessionOverview(workspaceId: string): Promise<SessionOverview[]> {
   const client = requireClient()
   const { data, error } = await client.rpc('interview_session_overview', {

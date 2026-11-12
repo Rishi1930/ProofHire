@@ -183,9 +183,16 @@ func formatCount(count int, unit string) string {
 
 func validHTTPSURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
+	if err != nil || parsed.Hostname() == "" ||
 		parsed.User != nil || strings.ContainsAny(value, "\r\n") {
 		return false
 	}
-	return true
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

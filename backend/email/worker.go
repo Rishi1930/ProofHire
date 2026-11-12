@@ -25,10 +25,13 @@ type deliveryJob struct {
 }
 
 type deliveryContext struct {
-	CandidateName string `json:"candidate_name"`
-	JobTitle      string `json:"job_title"`
-	CompanyName   string `json:"company_name"`
-	Passed        bool   `json:"passed"`
+	CandidateName   string `json:"candidate_name"`
+	JobTitle        string `json:"job_title"`
+	CompanyName     string `json:"company_name"`
+	Passed          bool   `json:"passed"`
+	InterviewType   string `json:"interview_type"`
+	DurationSeconds int    `json:"duration_seconds"`
+	InterviewPath   string `json:"interview_path"`
 }
 
 type Worker struct {
@@ -137,26 +140,53 @@ func (worker *Worker) deliverOne(ctx context.Context) error {
 		return nil
 	}
 	job := jobs[0]
-	if job.EmailType != "screening_result" {
+	var rendered Rendered
+	switch job.EmailType {
+	case "screening_result":
+		var data deliveryContext
+		if err := worker.call(ctx, "get_email_delivery_context", map[string]any{
+			"target_job_id":      job.ID,
+			"target_lease_token": job.LeaseToken,
+		}, &data); err != nil {
+			return worker.fail(ctx, job, "email_context_unavailable", true)
+		}
+		var renderErr error
+		rendered, renderErr = RenderScreeningResult(ScreeningResult{
+			CandidateName: data.CandidateName,
+			JobTitle:      data.JobTitle,
+			CompanyName:   data.CompanyName,
+			Passed:        data.Passed,
+		})
+		if renderErr != nil {
+			return worker.fail(ctx, job, "email_context_invalid", false)
+		}
+	case "interview_invitation":
+		var data deliveryContext
+		if err := worker.call(ctx, "get_email_delivery_context", map[string]any{
+			"target_job_id":      job.ID,
+			"target_lease_token": job.LeaseToken,
+		}, &data); err != nil {
+			return worker.fail(ctx, job, "email_context_unavailable", true)
+		}
+		if worker.appBaseURL == "" || strings.TrimSpace(data.InterviewPath) == "" {
+			return worker.fail(ctx, job, "email_context_unavailable", true)
+		}
+		var renderErr error
+		rendered, renderErr = RenderInterviewInvitation(InterviewInvitation{
+			CandidateName: data.CandidateName,
+			JobTitle:      data.JobTitle,
+			CompanyName:   data.CompanyName,
+			InterviewType: data.InterviewType,
+			Duration:      time.Duration(data.DurationSeconds) * time.Second,
+			InterviewURL:  worker.appBaseURL + data.InterviewPath,
+		})
+		if renderErr != nil {
+			return worker.fail(ctx, job, "email_context_invalid", false)
+		}
+	default:
 		return worker.fail(ctx, job, "unsupported_email_type", false)
 	}
 
-	var data deliveryContext
-	if err := worker.call(ctx, "get_email_delivery_context", map[string]any{
-		"target_job_id":      job.ID,
-		"target_lease_token": job.LeaseToken,
-	}, &data); err != nil {
-		return worker.fail(ctx, job, "email_context_unavailable", true)
-	}
-	rendered, err := RenderScreeningResult(ScreeningResult{
-		CandidateName: data.CandidateName,
-		JobTitle:      data.JobTitle,
-		CompanyName:   data.CompanyName,
-		Passed:        data.Passed,
-	})
-	if err != nil {
-		return worker.fail(ctx, job, "email_context_invalid", false)
-	}
 	accepted, err := worker.provider.Send(ctx, Message{
 		To:             job.RecipientEmail,
 		Subject:        rendered.Subject,

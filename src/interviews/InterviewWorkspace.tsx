@@ -16,6 +16,7 @@ import { useWorkspaceApplications } from '../recruitment/useWorkspaceApplication
 import {
   cancelSession,
   createInterviewSession,
+  sendInterviewInvitation,
   loadSessionOverview,
   scoreSession,
   type CodingChallengeVersion,
@@ -267,11 +268,20 @@ export default function InterviewWorkspace() {
       })
       const link = `${window.location.origin}/interview/${result.token}`
       setInterviewLink(link)
+      let delivery = ''
+      try {
+        const queued = await sendInterviewInvitation(result.session_id, result.token)
+        delivery = queued.queued
+          ? ` An invitation email is queued for ${queued.recipient}.`
+          : ' The invitation email was already sent to this candidate.'
+      } catch (caught) {
+        delivery = ` The invitation email was not queued: ${errorText(caught, 'unknown error')}. Send the link manually.`
+      }
       try {
         await navigator.clipboard.writeText(link)
-        setSuccess('Interview created. The single-use link was copied to your clipboard.')
+        setSuccess(`Interview created. The single-use link was copied to your clipboard.${delivery}`)
       } catch {
-        setSuccess('Interview created. Copy the link below and send it to the candidate.')
+        setSuccess(`Interview created. Copy the link below and send it to the candidate.${delivery}`)
       }
       await loadWorkspace()
     } catch (caught) {

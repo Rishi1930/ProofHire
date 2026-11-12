@@ -136,3 +136,19 @@ order by routine_name, grantee;
 
 select indexname from pg_indexes
 where schemaname = 'public' and indexname = 'idx_interview_sessions_one_active';
+
+-- 9. Email delivery runtime (migration 202611120002).
+select
+  to_regprocedure('public.get_email_delivery_context(uuid, uuid)') is not null
+    as email_context,
+  to_regprocedure('public.set_email_delivery_configuration(boolean)') is not null
+    as email_configuration,
+  to_regprocedure('public.enqueue_screening_result_email()') is not null
+    as screening_result_email,
+  to_regprocedure('public.send_interview_invitation(uuid, text)') is not null
+    as interview_invitation_email,
+  exists (
+    select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r'
+      and c.relname = 'email_delivery_jobs'
+  ) as queue_table;
