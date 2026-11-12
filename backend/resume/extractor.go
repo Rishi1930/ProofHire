@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ledongthuc/pdf"
 )
 
 const (
@@ -410,9 +412,63 @@ func readZipEntry(file *zip.File, maximum int64) ([]byte, error) {
 }
 
 func (extractor *Extractor) extractPDF(ctx context.Context, content []byte) (string, error) {
-	if extractor.options.Tools.PDFToText == "" {
-		return "", fmt.Errorf("%w: install Poppler's pdftotext", ErrToolUnavailable)
+	// Poppler produces the best layout when it is installed, so prefer it.
+	var toolErr error
+	if extractor.options.Tools.PDFToText != "" {
+		text, err := extractor.extractPDFWithTool(ctx, content)
+		if err == nil {
+			return text, nil
+		}
+		if ctx.Err() != nil {
+			return "", classifyContextError(ctx.Err())
+		}
+		if errors.Is(err, ErrOutputTooLarge) {
+			return "", err
+		}
+		toolErr = err
 	}
+
+	// Reading the text layer in process keeps screening working without Poppler.
+	text, inProcessErr := extractPDFInProcess(content, extractor.options.MaxTextBytes)
+	if inProcessErr == nil {
+		return text, nil
+	}
+	if ctx.Err() != nil {
+		return "", classifyContextError(ctx.Err())
+	}
+
+	resultErr := inProcessErr
+	if !errors.Is(inProcessErr, ErrNoText) {
+		// The built-in reader could not parse the file. Report what the
+		// configured converter said, or ask for Poppler when none is installed,
+		// because a converter may still read an unusual but valid PDF.
+		if toolErr != nil {
+			resultErr = toolErr
+		} else {
+			resultErr = fmt.Errorf("%w: install Poppler's pdftotext", ErrToolUnavailable)
+		}
+	}
+
+	if errors.Is(resultErr, ErrNoText) {
+		if extractor.options.EnableOCR {
+			path, cleanup, writeErr := writeTemporaryFile(".pdf", content)
+			if writeErr == nil {
+				defer cleanup()
+				return extractor.ocrPDF(ctx, path)
+			}
+		}
+		if extractor.options.Tools.PDFToText == "" {
+			return "", fmt.Errorf(
+				"%w: the PDF has no text layer, so it is scanned or empty (install Poppler's pdftotext and Tesseract to read scans)",
+				ErrNoText,
+			)
+		}
+	}
+	return "", resultErr
+}
+
+// extractPDFWithTool reads a PDF through Poppler's pdftotext.
+func (extractor *Extractor) extractPDFWithTool(ctx context.Context, content []byte) (string, error) {
 	path, cleanup, err := writeTemporaryFile(".pdf", content)
 	if err != nil {
 		return "", err
@@ -433,13 +489,48 @@ func (extractor *Extractor) extractPDF(ctx context.Context, content []byte) (str
 		return "", fmt.Errorf("%w: Poppler could not read the PDF", ErrInvalidDocument)
 	}
 	normalized := strings.TrimSpace(string(text))
-	if normalized != "" {
-		return normalized, nil
-	}
-	if !extractor.options.EnableOCR {
+	if normalized == "" {
 		return "", ErrNoText
 	}
-	return extractor.ocrPDF(ctx, path)
+	return normalized, nil
+}
+
+// extractPDFInProcess reads text straight from the PDF so screening works on a
+// machine without Poppler installed.
+func extractPDFInProcess(content []byte, maxBytes int) (string, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxTextBytes
+	}
+	reader, err := pdf.NewReader(bytes.NewReader(content), int64(len(content)))
+	if err != nil {
+		return "", fmt.Errorf("%w: the PDF could not be parsed", ErrInvalidDocument)
+	}
+
+	var builder strings.Builder
+	for index := 1; index <= reader.NumPage(); index++ {
+		page := reader.Page(index)
+		if page.V.IsNull() {
+			continue
+		}
+		text, pageErr := page.GetPlainText(nil)
+		if pageErr != nil {
+			continue
+		}
+		builder.WriteString(text)
+		builder.WriteString("\n")
+		if builder.Len() > maxBytes {
+			return "", ErrOutputTooLarge
+		}
+	}
+
+	extracted := strings.TrimSpace(builder.String())
+	if extracted == "" {
+		return "", ErrNoText
+	}
+	if len(extracted) > maxBytes {
+		return "", ErrOutputTooLarge
+	}
+	return extracted, nil
 }
 
 func (extractor *Extractor) extractDOC(ctx context.Context, content []byte) (string, error) {

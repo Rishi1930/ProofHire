@@ -68,6 +68,12 @@ export default function Interviews() {
   const [round, setRound] = useState('1')
   const [interviewer, setInterviewer] = useState('')
   const [feedbackEdits, setFeedbackEdits] = useState<Record<string, string>>({})
+  const [emailCounts, setEmailCounts] = useState({ queued: 0, sent: 0, failed: 0 })
+  const [sessionCounts, setSessionCounts] = useState({
+    invited: 0,
+    inProgress: 0,
+    completed: 0,
+  })
 
   const loadInterviews = useCallback(async () => {
     if (!workspaceId || !supabase) {
@@ -95,6 +101,33 @@ export default function Interviews() {
         if ((data ?? []).length < pageSize) break
       }
       setInterviews(records)
+
+      const { data: emailRows } = await supabase
+        .from('email_delivery_jobs')
+        .select('status')
+        .eq('workspace_id', workspaceId)
+        .in('email_type', ['screening_result', 'application_received', 'shortlisted', 'interview_invitation'])
+        .limit(1000)
+      const nextEmailCounts = { queued: 0, sent: 0, failed: 0 }
+      for (const row of (emailRows ?? []) as { status: string }[]) {
+        if (row.status === 'sent') nextEmailCounts.sent += 1
+        else if (row.status === 'failed' || row.status === 'cancelled') nextEmailCounts.failed += 1
+        else nextEmailCounts.queued += 1
+      }
+      setEmailCounts(nextEmailCounts)
+
+      const { data: sessionRows } = await supabase
+        .from('interview_sessions')
+        .select('status')
+        .eq('workspace_id', workspaceId)
+        .limit(1000)
+      const nextSessionCounts = { invited: 0, inProgress: 0, completed: 0 }
+      for (const row of (sessionRows ?? []) as { status: string }[]) {
+        if (row.status === 'ready') nextSessionCounts.invited += 1
+        else if (row.status === 'completed') nextSessionCounts.completed += 1
+        else if (row.status !== 'cancelled' && row.status !== 'expired') nextSessionCounts.inProgress += 1
+      }
+      setSessionCounts(nextSessionCounts)
     } catch (caughtError) {
       setInterviews([])
       setError(messageFromError(caughtError))
@@ -120,8 +153,6 @@ export default function Interviews() {
       item.interview_status === 'scheduled' &&
       new Date(item.scheduled_at).getTime() >= now,
   )
-  const completed = interviews.filter((item) => item.interview_status === 'completed')
-  const feedbackPending = completed.filter((item) => !item.feedback?.trim())
 
   async function handleSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -204,7 +235,7 @@ export default function Interviews() {
         <div className="page-heading">
           <span className="page-eyebrow">RECRUITER WORKFLOW</span>
           <h1>Interviews</h1>
-          <p>Schedule interviews, track outcomes, and capture recruiter feedback.</p>
+          <p>Technical interviews, final-round schedules, and recruiter feedback.</p>
           <Link className="text-link" to="/interviews/technical">
             Open the technical interview engine →
           </Link>
@@ -235,27 +266,34 @@ export default function Interviews() {
       <div className="info-banner">
         <CalendarDays size={19} />
         <div>
-          <strong>Scheduling is internal only</strong>
+          <strong>Shortlisted candidates take the interview online</strong>
           <p>
-            Saving a schedule does not send an invitation. Email delivery,
-            candidate responses, calendar integrations, recordings, and
-            transcripts are not configured.
+            Open the technical interview engine to build a session for a
+            shortlisted application and send the invitation. The candidate
+            answers role questions and a coding task, and submissions are
+            scored automatically. The schedule below is an optional manual
+            record for final rounds such as a call or a meeting.
+          </p>
+          <p>
+            {emailCounts.sent + emailCounts.queued + emailCounts.failed === 0
+              ? 'No pipeline email has been queued yet. Invitations are queued when you send one from the interview engine.'
+              : `${emailCounts.sent} email${emailCounts.sent === 1 ? '' : 's'} delivered, ${emailCounts.queued} queued, ${emailCounts.failed} failed. Queued email is sent by the worker on your machine.`}
           </p>
         </div>
       </div>
 
       <div className="metric-grid">
-        <div className="metric-card"><span>Upcoming interviews</span><strong>{pageLoading ? '—' : upcoming.length}</strong><small>Future scheduled records</small></div>
-        <div className="metric-card"><span>Completed</span><strong>{pageLoading ? '—' : completed.length}</strong><small>Interview record status</small></div>
-        <div className="metric-card"><span>Feedback pending</span><strong>{pageLoading ? '—' : feedbackPending.length}</strong><small>Completed without feedback</small></div>
-        <div className="metric-card"><span>Email invitations</span><strong>Unavailable</strong><small>No delivery provider configured</small></div>
+        <div className="metric-card"><span>Technical interviews</span><strong>{pageLoading ? '—' : sessionCounts.invited + sessionCounts.inProgress + sessionCounts.completed}</strong><small>{sessionCounts.invited} awaiting candidate · {sessionCounts.inProgress} in progress</small></div>
+        <div className="metric-card"><span>Completed</span><strong>{pageLoading ? '—' : sessionCounts.completed}</strong><small>Scored coding interviews</small></div>
+        <div className="metric-card"><span>Upcoming calls</span><strong>{pageLoading ? '—' : upcoming.length}</strong><small>Manually scheduled rounds</small></div>
+        <div className="metric-card"><span>Emails delivered</span><strong>{pageLoading ? '—' : emailCounts.sent}</strong><small>{emailCounts.queued} queued · {emailCounts.failed} failed</small></div>
       </div>
 
       <section className="panel interview-schedule-panel">
         <header className="recruitment-list-header">
           <div>
             <h2><Plus size={18} /> Schedule an interview</h2>
-            <p>Choose an application already in the Interview stage. This records the schedule only.</p>
+            <p>Optional manual record for a final round. The technical interview itself runs in the interview engine.</p>
           </div>
         </header>
         <form className="interview-schedule-form" onSubmit={(event) => void handleSchedule(event)}>
